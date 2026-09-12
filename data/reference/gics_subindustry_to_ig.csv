@@ -1,0 +1,191 @@
+sub_industry,ig_code,ig_name
+oil and gas drilling,1010,Energy
+oil and gas exploration and production,1010,Energy
+oil and gas equipment and services,1010,Energy
+oil and gas refining and marketing,1010,Energy
+oil and gas storage and transportation,1010,Energy
+integrated oil and gas,1010,Energy
+coal and consumable fuels,1010,Energy
+independent power producers and energy traders,1010,Energy
+commodity chemicals,1510,Materials
+diversified chemicals,1510,Materials
+fertilizers and agricultural chemicals,1510,Materials
+industrial gases,1510,Materials
+specialty chemicals,1510,Materials
+construction materials,1510,Materials
+metal and glass containers,1510,Materials
+"metal, glass and plastic containers",1510,Materials
+paper and paper products,1510,Materials
+agricultural products,1510,Materials
+diversified metals and mining,1510,Materials
+gold,1510,Materials
+copper,1510,Materials
+aluminum,1510,Materials
+steel,1510,Materials
+precious metals and minerals,1510,Materials
+forest products,1510,Materials
+aerospace and defense,2010,Capital Goods
+building products,2010,Capital Goods
+construction and engineering,2010,Capital Goods
+electrical components and equipment,2010,Capital Goods
+heavy electrical equipment,2010,Capital Goods
+industrial conglomerates,2010,Capital Goods
+machinery,2010,Capital Goods
+construction and farm machinery,2010,Capital Goods
+agricultural and farm machinery,2010,Capital Goods
+trading companies and distributors,2010,Capital Goods
+commercial printing,2020,Commercial and Professional Services
+environmental and facilities services,2020,Commercial and Professional Services
+office services and supplies,2020,Commercial and Professional Services
+diversified support services,2020,Commercial and Professional Services
+security and alarm services,2020,Commercial and Professional Services
+human resource and employment services,2020,Commercial and Professional Services
+research and consulting services,2020,Commercial and Professional Services
+data processing and outsourced services,2020,Commercial and Professional Services
+air freight and logistics,2030,Transportation
+airlines,2030,Transportation
+passenger airlines,2030,Transportation
+cargo airlines,2030,Transportation
+marine,2030,Transportation
+marine transportation,2030,Transportation
+trucking,2030,Transportation
+rail transportation,2030,Transportation
+ground transportation,2030,Transportation
+transportation infrastructure,2030,Transportation
+distributors,2510,Consumer Discretionary Distribution and Retail
+specialty retail,2510,Consumer Discretionary Distribution and Retail
+automotive retail,2510,Consumer Discretionary Distribution and Retail
+apparel retail,2510,Consumer Discretionary Distribution and Retail
+computer and electronics retail,2510,Consumer Discretionary Distribution and Retail
+home improvement retail,2510,Consumer Discretionary Distribution and Retail
+other specialty retail,2510,Consumer Discretionary Distribution and Retail
+homefurnishing retail,2510,Consumer Discretionary Distribution and Retail
+broadline retail,2540,Broadline Retail
+department stores,2540,Broadline Retail
+automobile components,2520,Consumer Durables and Apparel
+automobile manufacturers,2520,Consumer Durables and Apparel
+household appliances,2520,Consumer Durables and Apparel
+housewares and specialties,2520,Consumer Durables and Apparel
+home furnishings,2520,Consumer Durables and Apparel
+homebuilding,2520,Consumer Durables and Apparel
+consumer electronics,2520,Consumer Durables and Apparel
+leisure products,2520,Consumer Durables and Apparel
+apparel and luxury goods,2520,Consumer Durables and Apparel
+"apparel, accessories and luxury goods",2520,Consumer Durables and Apparel
+footwear,2520,Consumer Durables and Apparel
+textiles,2520,Consumer Durables and Apparel
+"hotels, resorts and cruise lines",2530,Consumer Services
+leisure facilities,2530,Consumer Services
+restaurants,2530,Consumer Services
+specialized consumer services,2530,Consumer Services
+education services,2020,Commercial and Professional Services
+drug retail,3010,Consumer Staples Distribution and Retail
+consumer staples merchandise retail,3010,Consumer Staples Distribution and Retail
+food retail,3010,Consumer Staples Distribution and Retail
+distillers and vintners,3020,Food Beverage and Tobacco
+brewers,3020,Food Beverage and Tobacco
+soft drinks and nonalcoholic beverages,3020,Food Beverage and Tobacco
+packaged foods and meats,3020,Food Beverage and Tobacco
+tobacco,3020,Food Beverage and Tobacco
+household products,3030,Household and Personal Products
+personal care products,3030,Household and Personal Products
+personal products,3030,Household and Personal Products
+diversified banks,4010,Banks
+regional banks,4010,Banks
+diversified financial services,4020,Financial Services
+multi-sector holdings,4020,Financial Services
+specialized finance,4020,Financial Services
+transaction and payment processing services,4020,Financial Services
+financial exchanges and data,4020,Financial Services
+investment banking and brokerage,4020,Financial Services
+commercial and residential mortgage finance,4020,Financial Services
+mortgage reits,4020,Financial Services
+insurance brokers,4030,Insurance
+life and health insurance,4030,Insurance
+multi-line insurance,4030,Insurance
+property and casualty insurance,4030,Insurance
+reinsurance,4030,Insurance
+application software,4510,Software and Services
+systems software,4510,Software and Services
+it consulting and other services,4510,Software and Services
+internet services and infrastructure,4510,Software and Services
+interactive media and services,5020,Media and Entertainment
+interactive home entertainment,5020,Media and Entertainment
+communications equipment,4520,Technology Hardware and Equipment
+"technology hardware, storage and peripherals",4520,Technology Hardware and Equipment
+"electronic equipment, instruments and components",4520,Technology Hardware and Equipment
+electronic manufacturing services,4520,Technology Hardware and Equipment
+electronic components,4520,Technology Hardware and Equipment
+electronic equipment and instruments,4520,Technology Hardware and Equipment
+technology distributors,4520,Technology Hardware and Equipment
+semiconductor materials and equipment,4530,Semiconductors and Semiconductor Equipment
+semiconductors,4530,Semiconductors and Semiconductor Equipment
+diversified telecommunication services,5010,Telecommunication Services
+wireless telecommunication services,5010,Telecommunication Services
+advertising,5020,Media and Entertainment
+broadcasting,5020,Media and Entertainment
+cable and satellite,5020,Media and Entertainment
+movies and entertainment,5020,Media and Entertainment
+publishing,5020,Media and Entertainment
+electric utilities,5510,Utilities
+gas utilities,5510,Utilities
+multi-utilities,5510,Utilities
+water utilities,5510,Utilities
+independent power and renewable electricity producers,5510,Utilities
+diversified reits,6010,Equity Real Estate Investment Trusts (REITs)
+industrial reits,6010,Equity Real Estate Investment Trusts (REITs)
+hotel and resort reits,6010,Equity Real Estate Investment Trusts (REITs)
+office reits,6010,Equity Real Estate Investment Trusts (REITs)
+health care reits,6010,Equity Real Estate Investment Trusts (REITs)
+residential reits,6010,Equity Real Estate Investment Trusts (REITs)
+retail reits,6010,Equity Real Estate Investment Trusts (REITs)
+data center reits,6010,Equity Real Estate Investment Trusts (REITs)
+telecommunications reits,6010,Equity Real Estate Investment Trusts (REITs)
+self-storage reits,6010,Equity Real Estate Investment Trusts (REITs)
+timber reits,6010,Equity Real Estate Investment Trusts (REITs)
+specialty reits,6010,Equity Real Estate Investment Trusts (REITs)
+diversified real estate activities,6020,Real Estate Management and Development
+real estate operating companies,6020,Real Estate Management and Development
+real estate development,6020,Real Estate Management and Development
+real estate services,6020,Real Estate Management and Development
+health care equipment,3510,Health Care Equipment and Services
+health care supplies,3510,Health Care Equipment and Services
+health care distributors,3510,Health Care Equipment and Services
+health care services,3510,Health Care Equipment and Services
+health care facilities,3510,Health Care Equipment and Services
+health care providers and services,3510,Health Care Equipment and Services
+managed health care,3510,Health Care Equipment and Services
+pharmaceuticals,3520,Pharmaceuticals Biotechnology and Life Sciences
+biotechnology,3520,Pharmaceuticals Biotechnology and Life Sciences
+life sciences tools and services,3520,Pharmaceuticals Biotechnology and Life Sciences
+industrial machinery and supplies and components,2010,Capital Goods
+construction machinery and heavy transportation equipment,2010,Capital Goods
+asset management and custody banks,4020,Financial Services
+paper and plastic packaging products and materials,1510,Materials
+agricultural products and services,1510,Materials
+silver,1510,Materials
+multi-family residential reits,6010,Equity Real Estate Investment Trusts (REITs)
+single-family residential reits,6010,Equity Real Estate Investment Trusts (REITs)
+net lease reits,6010,Equity Real Estate Investment Trusts (REITs)
+gaming reits,6010,Equity Real Estate Investment Trusts (REITs)
+lodging reits,6010,Equity Real Estate Investment Trusts (REITs)
+self storage reits,6010,Equity Real Estate Investment Trusts (REITs)
+beverages,3020,Food Beverage and Tobacco
+"independent power producers, energy traders and pipeline operators",1010,Energy
+discount stores,2540,Broadline Retail
+specialty business services,2020,Commercial and Professional Services
+staffing and employment services,2020,Commercial and Professional Services
+rental and leasing services,2020,Commercial and Professional Services
+scientific and technical instruments,4520,Technology Hardware and Equipment
+computer hardware,4520,Technology Hardware and Equipment
+soft drinks and non-alcoholic beverages,3020,Food Beverage and Tobacco
+consumer finance,4020,Financial Services
+telecom tower reits,6010,Equity Real Estate Investment Trusts (REITs)
+cargo ground transportation,2030,Transportation
+casinos and gaming,2530,Consumer Services
+integrated telecommunication services,5010,Telecommunication Services
+health care technology,3510,Health Care Equipment and Services
+automotive parts and equipment,2520,Consumer Durables and Apparel
+other specialized reits,6010,Equity Real Estate Investment Trusts (REITs)
+food distributors,3010,Consumer Staples Distribution and Retail
+passenger ground transportation,2030,Transportation

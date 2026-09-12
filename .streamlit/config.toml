@@ -1,0 +1,5 @@
+# Streamlit UI config for stocks_scanner (control.sh runs from the project root)
+# toolbar left at default so the main menu (3 dots) stays available; the useless
+# Print / Record-screencast entries are hidden via CSS in dashboard/app.py.
+[browser]
+gatherUsageStats = false

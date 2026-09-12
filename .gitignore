@@ -1,0 +1,13 @@
+# environment
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# data caches & scan artifacts (regenerable; the GICS map below IS source)
+data/*
+!data/reference/
+
+# secrets & runtime
+.env
+data/logs/
