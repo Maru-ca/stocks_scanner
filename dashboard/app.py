@@ -303,13 +303,19 @@ def _options_section(sel: str, spot, gs10, ov_row) -> None:
     crow = view.iloc[picked_i]
     bid, ask, last = MD._n(crow.get("bid")), MD._n(crow.get("ask")), MD._n(crow.get("last"))
     prem, mid, weak = MD._premium_from_quotes(bid, ask, last)
+    wide = (bid is not None and ask is not None and mid is not None
+            and mid > 0 and (ask - bid) / mid >= 0.5)
     stats = MD.contract_analytics(
         "put" if side == "Puts" else "call",
         spot, float(crow["strike"]), prem, dte, MD._n(crow.get("iv")), rate=rate,
     )
-    st.markdown(f"**Selected {side[:-1].lower()}** · strike ${float(crow['strike']):,.1f} · "
-                f"{dte} DTE · premium {_fmt(prem, '{:.2f}')}"
-                f"{' (weak quote — bid unusable)' if weak else ''}")
+    sel_line = (f"**Selected {side[:-1].lower()}** · strike ${float(crow['strike']):,.1f} · "
+                f"{dte} DTE · premium {_fmt(prem, '{:.2f}')}")
+    if weak:
+        sel_line += " (weak quote — bid unusable)"
+    if wide:
+        sel_line += f" (wide market · bid {bid} / ask {ask} — treat bid as the price)"
+    st.markdown(sel_line)
 
     # --- CSP lens: what the credit buys and how far it protects ----------------
     cash = stats.get("cash_pct")
@@ -320,9 +326,14 @@ def _options_section(sel: str, spot, gs10, ov_row) -> None:
               "price can fall this far before the credit is gone" if side == "Puts"
               else "price can rise this far before the credit is gone")
     k2.metric("Credit vs cash posted", _fmt(cash, "{:.2%}"), "premium ÷ strike")
-    k3.metric("Credit vs 10Y",
-              _fmt(ann, "{:.0%} ann") if ann is not None else _fmt(cash, "{:.2%} raw"),
-              f"10Y = {rate:.1%}" if ann is not None else "not annualized (<21 DTE)")
+    if ann is not None:
+        k3.metric("Credit vs 10Y", _fmt(ann, "{:.0%} ann"), f"10Y = {rate:.1%}")
+    elif cash is not None and cash >= 0.001:
+        k3.metric("Credit vs 10Y", _fmt(cash, "{:.2%} raw"),
+                  f"${_fmt(prem, '{:.2f}')} credit over {dte} DTE — not annualized")
+    else:
+        k3.metric("Credit vs 10Y", "≈ no credit",
+                  f"${_fmt(prem, '{:.2f}')} at {dte} DTE — nothing worth comparing to 10Y")
     k4.metric("≈ assignment risk", _fmt(stats.get("assignment_risk"), "{:.0%}"),
               "Black–Scholes |delta| ≈ P(finish ITM) — an estimate, not a forecast")
     if cushion is not None and cushion > 0:
