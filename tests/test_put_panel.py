@@ -221,3 +221,19 @@ def test_contract_analytics_through_be_and_call_side():
     assert c["cushion_pct"] == pytest.approx(0.07)
     assert c["pay_vs_cushion"] == pytest.approx(2.0 / 7.0)
     assert 0.0 < c["assignment_risk"] < 1.0
+
+
+# ----------------------------------------------- comparable income lens --------
+def test_income_per_risk_and_ann_vs_rate():
+    a = MD.contract_analytics("put", 100.0, 95.0, 2.0, 30, 0.30, rate=0.05)
+    cash = 2.0 / 95.0
+    assert a["income_per_risk"] == pytest.approx(cash / a["assignment_risk"])
+    assert a["annualized"] == pytest.approx(cash * 365 / 30)
+    assert a["ann_vs_rate"] == pytest.approx(cash * 365 / 30 / 0.05)
+    short = MD.contract_analytics("put", 100.0, 95.0, 2.0, 10, 0.30, rate=0.05)
+    assert "annualized" not in short            # <21 DTE: no annualized form at all
+    assert "ann_vs_rate" not in short
+    assert "income_per_risk" in short           # risk ratio exists at any DTE
+    no_iv = MD.contract_analytics("put", 100.0, 95.0, 2.0, 30, None, rate=0.05)
+    assert "income_per_risk" not in no_iv       # no delta estimate -> omit
+    assert "ann_vs_rate" in no_iv               # annualization needs no IV, only cash%+DTE

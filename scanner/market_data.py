@@ -552,4 +552,14 @@ def contract_analytics(side: str, spot: float, strike: float, premium: float | N
     out.update(black_scholes_greeks(side, spot, strike, dte, iv, rate=rate or 0.0))
     if "delta" in out:
         out["assignment_risk"] = abs(out["delta"])
+    # comparable income lens: cash % of strike (posted), and that income per unit
+    # of assignment risk (|delta|, a BS estimate). Annualized ratio vs `rate` (the
+    # 10Y) only exists from 21 DTE — short-DTE annualization would mislead.
+    if out.get("cash_pct") is not None and out.get("assignment_risk", 0.0) > 0:
+        out["income_per_risk"] = out["cash_pct"] / out["assignment_risk"]
+    ann = annualized_premium(out.get("cash_pct"), dte)
+    if ann is not None:
+        out["annualized"] = ann
+        if rate and float(rate) > 0:
+            out["ann_vs_rate"] = ann / float(rate)
     return out

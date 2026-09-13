@@ -317,30 +317,28 @@ def _options_section(sel: str, spot, gs10, ov_row) -> None:
         sel_line += f" (wide market · bid {bid} / ask {ask} — treat bid as the price)"
     st.markdown(sel_line)
 
-    # --- CSP lens: what the credit buys and how far it protects ----------------
+    # --- CSP lens: income first (comparable across names), risk supporting ------
     cash = stats.get("cash_pct")
-    ann = MD.annualized_premium(cash, dte)
+    ann = stats.get("annualized")          # only from 21 DTE (annualized_premium)
+    ann_vs = stats.get("ann_vs_rate")      # ann ÷ 10Y
+    ipr = stats.get("income_per_risk")     # cash % ÷ |delta|
     cushion = stats.get("cushion_pct")
     k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Cushion to BE", _fmt(cushion, "{:.1%}"),
+    if ann is not None:
+        k1.metric("Income on cash posted", _fmt(cash, "{:.2%}"),
+                  f"{_fmt(ann, '{:.0%}')} ann · {_fmt(ann_vs, '{:.1f}')}× the 10Y")
+    else:
+        k1.metric("Income on cash posted", _fmt(cash, "{:.2%}"),
+                  f"raw at {dte} DTE — not annualized")
+    k2.metric("Income per unit risk", _fmt(ipr, "{:.2f}×") if ipr is not None else "—",
+              "cash % ÷ P(assignment)" if ipr is not None else "no delta estimate")
+    k3.metric("Cushion to BE", _fmt(cushion, "{:.1%}"),
               "price can fall this far before the credit is gone" if side == "Puts"
               else "price can rise this far before the credit is gone")
-    k2.metric("Credit vs cash posted", _fmt(cash, "{:.2%}"), "premium ÷ strike")
-    if ann is not None:
-        k3.metric("Credit vs 10Y", _fmt(ann, "{:.0%} ann"), f"10Y = {rate:.1%}")
-    elif cash is not None and cash >= 0.001:
-        k3.metric("Credit vs 10Y", _fmt(cash, "{:.2%} raw"),
-                  f"${_fmt(prem, '{:.2f}')} credit over {dte} DTE — not annualized")
-    else:
-        k3.metric("Credit vs 10Y", "≈ no credit",
-                  f"${_fmt(prem, '{:.2f}')} at {dte} DTE — nothing worth comparing to 10Y")
     k4.metric("≈ assignment risk", _fmt(stats.get("assignment_risk"), "{:.0%}"),
-              "Black–Scholes |delta| ≈ P(finish ITM) — an estimate, not a forecast")
-    if cushion is not None and cushion > 0:
-        k5.metric("Pay vs cushion", _fmt(stats.get("pay_vs_cushion"), "{:.2f}"),
-                  "premium per 1% of cushion to BE")
-    else:
-        k5.metric("Pay vs cushion", "—", "already at/through breakeven")
+              "Black–Scholes |delta| — an estimate, not a forecast")
+    k5.metric("Breakeven", _fmt(stats.get("breakeven"), "{:.2f}"),
+              "effective buy if assigned")
 
     g1, g2, g3, g4 = st.columns(4)
     g1.metric("Delta (long)", _fmt(stats.get("delta"), "{:.2f}"),
@@ -349,11 +347,11 @@ def _options_section(sel: str, spot, gs10, ov_row) -> None:
     g3.metric("Theta / day", _fmt(stats.get("theta"), "{:.3f}"))
     g4.metric("Vega / vol-pt", _fmt(stats.get("vega"), "{:.3f}"))
     st.caption(
-        f"Breakeven {_fmt(stats.get('breakeven'), '{:.2f}')} "
-        f"({'strike − premium' if side == 'Puts' else 'strike + premium'} — your effective "
-        f"buy if assigned) · strike vs spot {_fmt(stats.get('strike_vs_spot'), '{:.1%}')} · "
-        f"listed IV {_fmt(MD._n(crow.get('iv')), '{:.1%}')}. Greeks are Black–Scholes from "
-        "that IV. This panel never filters the Ideas list."
+        f"Strike vs spot {_fmt(stats.get('strike_vs_spot'), '{:.1%}')} · "
+        f"listed IV {_fmt(MD._n(crow.get('iv')), '{:.1%}')} · Greeks are Black–Scholes from "
+        "that IV. The two income numbers are comparable across names at the SAME expiry "
+        "(same snap); don't compare a 7d to a 45d without the annualized form — and that "
+        "only exists from 21 DTE. This panel never filters the Ideas list."
     )
 
 
