@@ -1,9 +1,10 @@
-"""Streamlit dashboard for stocks_scanner — reads scan artifacts (data/scans/<date>/).
+"""Streamlit UI for stocks_scanner — reads scan artifacts (data/scans/<date>/).
 
-Two pages (top-right menu / sidebar navigation): the Dashboard (preset tables,
-quadrant scatter, drill-down, put overlay) and the Data manager (cache visibility +
-graphical refresh). The dashboard always serves the LATEST scan; the header shows
-when it was last refreshed. Older scans remain inspectable from the Data manager.
+Two pages: **Ideas** (the default) and **Data manager** (ops). Ideas is one
+scrolling page for the manual cash-secured-put workflow: the hunt map (quality
+× cheapness), tagged cards for the names inside the hunt zone, and a company
+detail that appears once you pick a ticker. Every number here is display-only —
+the scanner ranks, the human decides.
 
 Run: streamlit run dashboard/app.py   (or ./control.sh start)
 """
@@ -36,126 +37,27 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-PRESETS = {
-    "Quality at a Discount (flagship)": "presets/flagship.csv",
-    "Beaten but Delivering": "presets/beaten_but_delivering.csv",
-    "Compounders on Sale": "presets/compounders_on_sale.csv",
-}
-
-FLOOR_KEY = "Quality floor passers (wide)"
-
-# Column hover docs for the preset table (st.column_config help tooltips).
-# Mirrors scanner/config.py weights + docs 05/06 — if a threshold changes, fix this text.
+# Column hover docs for the compact table. Mirrors scanner/config.py + docs 05/06 —
+# if a threshold changes there, fix this text.
 COLUMN_DOCS = {
     "quality_score": (
         "Weighted blend of peer-percentile components: profitability 45% (ROIC, FCF margin, "
         "gross margin) · consistency 25% (of the last 5y: years with ROIC above bar, years "
         "with positive FCF) · accounting 20% (FCF ÷ net income) · balance 10% (net debt/EBITDA, "
-        "lower = better). Percentiles are computed vs an industry-group → sector → market "
-        "ladder. The top 20% of this score = the quality floor (the gate)."
+        "lower = better). The top 20% of this score = the quality floor."
     ),
     "cheapness_score": (
         "0–100 blend: own-history EV/FCF percentile 40% (ranked against the market "
         "cross-section) · peer-ladder EV/EBIT percentile 30% · FCF yield on a fixed 0–10% "
-        "scale 30%. Higher = cheaper."
+        "scale 30%. Higher = cheaper. The zone cut is ≥ 50."
     ),
-    "residual": (
-        "log(EV/FCF) minus what the regression says the market pays for that ROIC and "
-        "industry group. Negative = cheaper than its fundamentals predict."
-    ),
-    "residual_pct": (
-        "Percentile of the residual among quality-floor passers (midrank). Low = most "
-        "under-priced vs peers; the flagship ranks by this."
-    ),
-    "ev_ebit": "EV / TTM EBIT — peer-multiple view of cheapness.",
-    "ev_fcf": "EV / TTM adjusted FCF (SBC-expensed).",
     "fcf_yield": "TTM adjusted FCF ÷ enterprise value.",
     "ev_fcf_self_pct": (
         "EV/FCF percentile within the stock's OWN 5y weekly history (0 = cheapest ever, "
-        "100 = most expensive). Flag arm: ≤ 20."
+        "100 = most expensive)."
     ),
-    "ev_fcf_self_z": (
-        "z-score of current EV/FCF vs its own 5y history. Flag arm: ≤ −1.0."
-    ),
-    "brake_gm": "TTM gross margin ÷ its 5y average. Flag brake: ≥ 0.97.",
-    "brake_fcf_margin": "TTM adjusted-FCF margin ÷ its 5y average. Flag brake: ≥ 0.95.",
-    "brake_roic": "TTM ROIC ÷ its 5y average. Flag brake: ≥ 0.90.",
-    "composite": "Display-only blend of the two scores — nothing is ranked by it (doc 05 §2.3).",
     "price": "Last weekly close.",
-}
-
-SCORE_DOC = """
-**QualityScore** — the gate (top 20% passes):
-
-| component | weight | inputs |
-|---|---|---|
-| profitability | 45% | ROIC, FCF margin, gross margin (peer percentiles) |
-| consistency | 25% | of last 5y: years ROIC above bar, years FCF positive |
-| accounting | 20% | FCF ÷ net income |
-| balance | 10% | net debt / EBITDA (lower = better) |
-
-Every input is winsorized and percentile-ranked against a peer ladder:
-industry group (≥ 8 names) → sector (≥ 8) → market. Missing components
-renormalize the weights (recorded per stock, never silently filled).
-
-**CheapnessScore** — the rank (higher = cheaper): own-history EV/FCF
-percentile 40% · peer EV/EBIT 30% · FCF yield (0–10% fixed scale) 30%.
-
-**Valuation residual** — the flagship's ranking key: log(EV/FCF) minus what
-a regression says the market pays for that ROIC + industry group. Low
-residual percentile = cheap vs peers.
-
-**Thesis:** quality filters, cheapness ranks, sentiment flags. Hover any
-column header in the preset table for its definition.
-"""
-
-# Plain-language preset contract, mirroring scanner/config.py + scanner/flags.py.
-# If a threshold below ever disagrees with config.py, fix this text.
-PRESET_INFO = {
-    "Quality at a Discount (flagship)": {
-        "filters": [
-            "passes the trading gates (ADV ≥ $20M, tenure ≥ 1y) with ≥80% of score inputs",
-            "QualityScore in the **top 20%** of the market (the quality floor)",
-            "multiple de-rated vs its **own 5y history** — any of: SELF percentile ≤ 20 · z-score ≤ −1.0 · EV/FCF ≤ 0.8× its 5y median",
-            "cheap vs **peers** — any of: FCF yield ≥ max(4%, 10Y Treasury) · valuation residual ≤ 20th percentile",
-            "fundamentals intact (brakes): gross margin ≥ 97% · FCF margin ≥ 95% · ROIC ≥ 90% of their 5y averages",
-        ],
-        "rank": "valuation residual ascending — most under-priced vs peers first",
-        "note": ("The tight thesis screen (the Adobe/Oracle hunt). Single-digit counts are it "
-                 "working as designed: it only fires when quality is demonstrably intact *and* "
-                 "the multiple has clearly de-rated."),
-    },
-    "Beaten but Delivering": {
-        "filters": [
-            "QualityScore in the **top 20%** of the market (the quality floor)",
-            "12-1m price momentum in the **bottom quartile of its sector** — the “beaten” part",
-            "analyst revision breadth **positive** over the last 90 days — more upgrades and price-target raises than downgrades and lowers — the “delivering” part",
-        ],
-        "rank": "CheapnessScore descending",
-        "note": ("Revision breadth comes from yfinance's analyst-action feed (free, no API "
-                 "key). v0.5.3 replaced the FMP consensus-EPS proxy with these rating/target "
-                 "events: observable immediately, no 90-day vintage warm-up."),
-    },
-    "Compounders on Sale": {
-        "filters": [
-            "consistency quality component ≥ **80/100**",
-            "EV/FCF in the **bottom 30% of its own 5y range** (self-history discount)",
-            "plus the flagship's quality floor, margin brakes and cheap-vs-peers arm",
-        ],
-        "rank": "CheapnessScore descending",
-        "note": ("Deliberately the strictest screen — the v0.4 review added the flagship brakes "
-                 "because without them this was “the junk list with a nice title”."),
-    },
-    FLOOR_KEY: {
-        "filters": [
-            "passes the trading gates (ADV ≥ $20M, tenure ≥ 1y) with ≥80% of score inputs",
-            "QualityScore in the **top 20%** of the market (the quality gate)",
-        ],
-        "rank": "CheapnessScore descending — cheapest high-quality names first",
-        "note": ("The wide hunt list. No de-rating or brake requirements: every quality-gated "
-                 "name with its cheapness rank. Browse here first, then use Drill-down to ask "
-                 "why a name is cheap."),
-    },
+    "yield at −5%": "FCF yield you'd lock in if put the stock at −5% (from the options chain).",
 }
 
 
@@ -166,9 +68,8 @@ def load_scan(scan_dir: Path, _stamp: float):
     metrics = pd.read_csv(scan_dir / "metrics.csv")
     cfg = json.loads((scan_dir / "config.json").read_text())
     hist = pd.read_parquet(scan_dir / "history.parquet") if (scan_dir / "history.parquet").exists() else pd.DataFrame()
-    presets = {name: pd.read_csv(scan_dir / rel) for name, rel in PRESETS.items() if (scan_dir / rel).exists()}
     overlay = pd.read_csv(scan_dir / "overlay.csv") if (scan_dir / "overlay.csv").exists() else pd.DataFrame()
-    return metrics, cfg, hist, presets, overlay
+    return metrics, cfg, hist, overlay
 
 
 def _latest_scan() -> Path | None:
@@ -185,7 +86,7 @@ def _fmt(v, spec: str) -> str:
 
 
 def _gated(metrics: pd.DataFrame) -> pd.DataFrame:
-    """Scored names that pass gates + coverage — the population every preset draws from."""
+    """Scored names that pass gates + coverage — the population the zone draws from."""
     return metrics[
         metrics["quality_score"].notna()
         & metrics["cheapness_score"].notna()
@@ -194,30 +95,21 @@ def _gated(metrics: pd.DataFrame) -> pd.DataFrame:
     ]
 
 
-def _floor_passers(metrics: pd.DataFrame) -> pd.DataFrame:
+def _highlighted(metrics: pd.DataFrame) -> pd.DataFrame:
+    """The hunt zone, as a list: gated + quality floor + cheapness ≥ 50 — the same
+    condition the shaded rectangle draws on the map. Cheapest first."""
     g = _gated(metrics)
-    return g[g["quality_floor_pass"].fillna(False)].sort_values("cheapness_score", ascending=False)
+    hi = g[g["quality_floor_pass"].fillna(False) & (g["cheapness_score"] >= 50)]
+    return hi.sort_values("cheapness_score", ascending=False)
 
 
-def _hopper(metrics: pd.DataFrame, cfg: dict) -> pd.DataFrame:
-    """The default morning list (v0.5.4): quality-floor names that are also cheap —
-    vs their own history (SELF pct ≤ 50) OR paying you outright (FCF yield ≥ max(4%, 10Y)).
-    Ranked by cheapness. This is a product view on the frozen methodology, not a new score."""
-    fp = _floor_passers(metrics)
-    gs10 = cfg.get("gs10") if cfg.get("gs10") is not None else 0.0
-    return fp[(fp["ev_fcf_self_pct"] <= 50) | (fp["fcf_yield"] >= max(0.04, gs10 or 0))]
-
-
-def _row_tags(row, compounders: set) -> list:
-    """Flag chips for one metrics row: thesis tags + brake warnings (v0.5.4: flags
-    became tags on the hopper; brakes warn instead of hiding names)."""
+def _row_tags(row) -> list:
+    """Chips for one metrics row. Flags as tags; brakes warn instead of hiding names."""
     tags = []
     if bool(row.get("flag_derated_quality") or False):
         tags.append(("hunt", "#e4572e"))
     if bool(row.get("flag_beaten_but_delivering") or False):
         tags.append(("beaten", "#4e79a7"))
-    if row.get("ticker") in compounders:
-        tags.append(("compounder", "#9467bd"))
     if any(pd.notna(row.get(k)) and float(row.get(k)) < t for k, t in [
         ("brake_gm", 0.97), ("brake_fcf_margin", 0.95), ("brake_roic", 0.90),
     ]):
@@ -233,26 +125,7 @@ def _chips_html(tags: list) -> str:
     )
 
 
-def _funnel_counts(metrics: pd.DataFrame, cfg: dict) -> tuple[int, int, int, int, int]:
-    g = _gated(metrics)
-    floor_df = g[g["quality_floor_pass"].fillna(False)]
-    flags = int(g["flag_derated_quality"].fillna(False).sum()) if "flag_derated_quality" in g else 0
-    return len(metrics), len(g), len(floor_df), len(_hopper(metrics, cfg)), flags
-
-
-def _funnel_fig(metrics: pd.DataFrame, cfg: dict) -> go.Figure:
-    total, scored, floor, hopper, flags = _funnel_counts(metrics, cfg)
-    fig = go.Figure(go.Funnel(
-        y=["Analyzed", "Scored & liquid", "Quality floor", "This morning's list", "The hunt (flagship)"],
-        x=[total, scored, floor, hopper, flags],
-        textinfo="value",
-        marker={"color": ["#8ea0b5", "#4e79a7", "#59a14f", "#f28e2b", "#e4572e"]},
-        connector={"line": {"color": "rgba(128,128,128,0.25)"}},
-    ))
-    fig.update_layout(height=240, margin=dict(l=8, r=8, t=4, b=4), showlegend=False)
-    return fig
-
-
+# ------------------------------------------------------------- card graphics ---
 def _spark_svg(values: list, w: int = 190, h: int = 42) -> str:
     """Tiny inline SVG line of a series with the last point marked. Lower line =
     cheaper, so green when the current point sits in the cheap half of its range."""
@@ -288,23 +161,17 @@ def _score_bar(label: str, value, color: str) -> str:
     )
 
 
-def _name_cards(df: pd.DataFrame, hist: pd.DataFrame, preset_name: str, n: int = 6,
-                tags: dict | None = None) -> None:
-    """Graphical preset cards: 5y EV/FCF sparkline + score bars + headline stats."""
-    info = PRESET_INFO.get(preset_name, {})
-    st.caption(
-        f"Top {min(n, len(df))} of **{preset_name}** — ranked by {info.get('rank', '—')}. "
-        "The line is 5 years of EV/FCF: falling means the market pays less for the same cash flow."
-    )
-    tags = tags or {}
+def _name_cards(df: pd.DataFrame, hist: pd.DataFrame, ov_by_t: pd.DataFrame,
+                tags: dict, n: int = 8) -> None:
+    """Graphical cards for the zone names, cheapest first: 5y EV/FCF sparkline,
+    score bars, and the assignment hint (yield now and at −5%)."""
     cards = []
     for _, r in df.head(n).iterrows():
         y: list = []
-        med = None
         if not hist.empty and "ticker" in hist.columns:
             g = hist[(hist["ticker"] == r["ticker"]) & hist["ev_fcf"].notna()].sort_values("week")
             y = g["ev_fcf"].tail(260).tolist()
-            med = float(pd.Series(y).median()) if y else None
+        med = float(pd.Series(y).median()) if y else None
         price = r.get("price")
         price_s = f"${price:,.0f}" if pd.notna(price) else "—"
         fy = r.get("fcf_yield")
@@ -314,14 +181,19 @@ def _name_cards(df: pd.DataFrame, hist: pd.DataFrame, preset_name: str, n: int =
         ev = r.get("ev_fcf")
         ev_s = f"{ev:.1f}x" if pd.notna(ev) else "—"
         med_s = f" · 5y median {med:.1f}x" if med else ""
+        t = r["ticker"]
+        y95 = None
+        if not ov_by_t.empty and t in ov_by_t.index:
+            v = ov_by_t.loc[t, "fcf_yield_strike_95"]
+            y95 = f"{v:.1%}" if pd.notna(v) else None
+        assign = f" · at −5%: {y95}" if y95 else ""
         sector = str(r.get("sector") or "")[:20]
         name = str(r.get("name") or "")[:22]
-        chips = _chips_html(tags.get(r["ticker"], []))
         cards.append(
             f"<div style='background:rgba(128,128,128,.07);border:1px solid rgba(128,128,128,.22);"
             f"border-radius:12px;padding:12px 14px'>"
-            f"<div style='font-size:1.05em'><b>{r['ticker']}</b> "
-            f"<span style='opacity:.65;font-size:.85em'>{name}</span>{chips}</div>"
+            f"<div style='font-size:1.05em'><b>{t}</b> "
+            f"<span style='opacity:.65;font-size:.85em'>{name}</span>{_chips_html(tags.get(t, []))}</div>"
             f"<div style='font-size:.72em;opacity:.6;margin-bottom:6px'>{sector} · {price_s}</div>"
             f"{_spark_svg(y)}"
             f"<div style='margin-top:6px'>"
@@ -329,7 +201,7 @@ def _name_cards(df: pd.DataFrame, hist: pd.DataFrame, preset_name: str, n: int =
             f"{_score_bar('Cheapness', r.get('cheapness_score'), '#4e79a7')}</div>"
             f"<div style='font-size:.75em;margin-top:6px'>"
             f"<span style='color:{fy_col};font-weight:600'>FCF yield {fy_s}</span>"
-            f"<span style='opacity:.7'> · EV/FCF {ev_s}{med_s}</span></div>"
+            f"<span style='opacity:.7'> · EV/FCF {ev_s}{med_s}{assign}</span></div>"
             f"</div>"
         )
     st.markdown(
@@ -339,26 +211,40 @@ def _name_cards(df: pd.DataFrame, hist: pd.DataFrame, preset_name: str, n: int =
     )
 
 
-def _hunt_map(metrics: pd.DataFrame, df: pd.DataFrame, cfg: dict, preset_name: str) -> None:
-    """Quadrant scatter: everything scored, current preset highlighted, hunt zone shaded."""
+# ---------------------------------------------------------------- the charts ---
+def _hunt_map(metrics: pd.DataFrame, hi: pd.DataFrame, cfg: dict, selected: str | None) -> None:
+    """Quality × cheapness scatter: grey = every scored name, orange = inside the
+    hunt zone (top-20% quality AND cheapness ≥ 50). The selected ticker is starred."""
     pts = metrics[metrics["quality_score"].notna() & metrics["cheapness_score"].notna()].copy()
-    member = set(df["ticker"]) if not df.empty else set()
+    member = set(hi["ticker"]) if not hi.empty else set()
     fig = go.Figure()
+    rest = pts[~pts["ticker"].isin(member)]
+    zone = pts[pts["ticker"].isin(member)]
     for sub, color, name, size, op in [
-        (pts[~pts["ticker"].isin(member)], "#8ea0b5", "the rest of the market", 8, 0.45),
-        (pts[pts["ticker"].isin(member)], "#e4572e", preset_name, 12, 0.95),
+        (rest, "#8ea0b5", "scored names", 8, 0.45),
+        (zone, "#e4572e", "in the hunt zone", 12, 0.95),
     ]:
         if sub.empty:
             continue
         hover = sub["ticker"] if "name" not in sub.columns else sub["ticker"] + " — " + sub["name"]
-        is_sel = name == preset_name
+        is_zone = name == "in the hunt zone"
         fig.add_trace(go.Scatter(
             x=sub["cheapness_score"], y=sub["quality_score"],
-            mode="markers+text" if is_sel and len(sub) <= 12 else "markers",
-            text=sub["ticker"] if is_sel and len(sub) <= 12 else None,
+            mode="markers+text" if is_zone and len(sub) <= 12 else "markers",
+            text=sub["ticker"] if is_zone and len(sub) <= 12 else None,
             textposition="top center", textfont=dict(size=9),
             name=name, hovertext=hover, hoverinfo="text",
             marker=dict(size=size, color=color, opacity=op, line=dict(width=1, color="white")),
+        ))
+    if selected and not pts.empty and (pts["ticker"] == selected).any():
+        s = pts[pts["ticker"] == selected].iloc[0]
+        fig.add_trace(go.Scatter(
+            x=[s["cheapness_score"]], y=[s["quality_score"]],
+            mode="markers+text", text=[selected], textposition="bottom center",
+            textfont=dict(size=11, color="#e4572e"),
+            showlegend=False, hoverinfo="skip",
+            marker=dict(size=18, color="#e4572e", symbol="star",
+                        line=dict(width=2, color="white")),
         ))
     thr = cfg.get("quality_floor_threshold")
     if thr is not None and pd.notna(thr):
@@ -369,42 +255,167 @@ def _hunt_map(metrics: pd.DataFrame, df: pd.DataFrame, cfg: dict, preset_name: s
         fig.add_annotation(x=77, y=107, text="the hunt zone", showarrow=False,
                            font=dict(color="#e4572e", size=11))
     fig.update_layout(
-        height=560, xaxis_range=[0, 105],
+        height=520, xaxis_range=[0, 105],
         xaxis_title="cheaper → (CheapnessScore, 100 = cheapest)",
         yaxis_title="higher quality ↑ (QualityScore)",
-        title=f"Every scored name — highlighted: {preset_name}",
+        title=f"Quality × cheapness — {len(zone)} names in the zone",
         hovermode="closest",
     )
     st.plotly_chart(fig, width="stretch")
     st.caption(
-        "Up and to the right is the thesis: great businesses at cheap prices. The dotted line is "
-        "the top-20% quality cut; the shaded corner is where the hunt lives. Pick a preset on the "
-        "left to highlight its members."
+        "Grey = every scored name. Orange = the zone: top-20% quality at cheapness ≥ 50. "
+        "Those names continue below, cheapest first — pick one to inspect."
     )
 
 
-# ------------------------------------------------------------ dashboard page --
-def dashboard_page():
+def _detail_charts(h: pd.DataFrame, sel: str) -> None:
+    """The four history charts from the persisted weekly frame (no scanner changes)."""
+    g1, g2 = st.columns(2)
+    with g1:
+        p = h["price"].dropna()
+        if not p.empty:
+            hi52 = float(p.tail(52).max())
+            last = float(p.iloc[-1])
+            dd = last / hi52 - 1 if hi52 > 0 else float("nan")
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=h.loc[p.index, "week"], y=p, name="price",
+                                     line=dict(color="#4e79a7")))
+            fig.add_hline(y=hi52, line_dash="dot", line_color="#666",
+                          annotation_text=f"52w high ${hi52:,.0f}")
+            fig.add_trace(go.Scatter(x=[h.loc[p.index[-1], "week"]], y=[last], mode="markers",
+                                     showlegend=False, marker=dict(size=10, color="#e4572e"),
+                                     hovertemplate=f"<b>{sel} ${last:,.2f} ({dd:.0%} off high)</b><extra></extra>"))
+            fig.update_layout(height=300, title=f"Price — {dd:.0%} off the 52-week high",
+                              yaxis_title="$")
+            st.plotly_chart(fig, width="stretch")
+        else:
+            st.caption("No price history for this name.")
+    with g2:
+        e = h["ev_fcf"].dropna()
+        if not e.empty:
+            med = float(e.median())
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=h.loc[e.index, "week"], y=e, name="EV/FCF",
+                                     line=dict(color="#76b7b2")))
+            fig.add_hline(y=med, line_dash="dot", annotation_text=f"5y median {med:.1f}x")
+            fig.add_hline(y=0.8 * med, line_dash="dash", line_color="#2ca02c",
+                          annotation_text="0.8× median")
+            cur = e.iloc[-1]
+            fig.add_trace(go.Scatter(x=[h.loc[e.index[-1], "week"]], y=[cur], mode="markers",
+                                     showlegend=False, marker=dict(size=10, color="#e4572e", symbol="diamond"),
+                                     hovertemplate=f"<b>{sel} now: {cur:.1f}x</b><extra></extra>"))
+            fig.update_layout(height=300, title="EV/FCF vs its own 5y history", yaxis_title="×")
+            st.plotly_chart(fig, width="stretch")
+        else:
+            st.caption("No valid EV/FCF history for this name.")
+    g3, g4 = st.columns(2)
+    with g3:
+        fy = (h["fcf_adj_ttm"] / h["ev"]).where(h["ev"] > 0).dropna()
+        if not fy.empty:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=h.loc[fy.index, "week"], y=fy, name="FCF yield",
+                                     line=dict(color="#59a14f")))
+            fig.add_hline(y=float(fy.iloc[-1]), line_dash="dot", line_color="#666",
+                          annotation_text=f"now {fy.iloc[-1]:.1%}")
+            fig.update_layout(height=300, title="FCF yield over time (TTM FCF ÷ EV)",
+                              yaxis_tickformat=".0%")
+            st.plotly_chart(fig, width="stretch")
+        else:
+            st.caption("No FCF-yield history for this name.")
+    with g4:
+        if h["fcf_adj_ttm"].notna().any():
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=h["week"], y=h["fcf_adj_ttm"] / 1e9, name="FCF (adj, TTM)"))
+            fig.add_trace(go.Scatter(x=h["week"], y=h["ni_ttm"] / 1e9, name="Net income (TTM)"))
+            fig.update_layout(height=300, title="Cash vs earnings (as-known TTM)", yaxis_title="$B")
+            st.plotly_chart(fig, width="stretch")
+        else:
+            st.caption("No cash-flow history for this name.")
+
+
+def _margin_snapshot(row) -> None:
+    """brake_* ratios ARE TTM ÷ 5y average — a one-row snapshot, not a time series."""
+    rows = []
+    for label, key, floor in [
+        ("Gross margin", "brake_gm", 0.97),
+        ("FCF margin", "brake_fcf_margin", 0.95),
+        ("ROIC", "brake_roic", 0.90),
+    ]:
+        v = row.get(key)
+        ok = pd.notna(v) and float(v) >= floor
+        rows.append({
+            "margin": label,
+            "TTM vs 5y avg": _fmt(v, "{:.2f}×"),
+            "floor": f"{floor:.2f}×",
+            "": "✓" if ok else ("⚠ below floor" if pd.notna(v) else "— no data"),
+        })
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    st.caption(
+        "Each ratio is this year's margin ÷ its 5-year average; below the floor is what the "
+        "⚠ margins chip on the card means — look before you leap."
+    )
+
+
+def _company_detail(sel: str, row, hist: pd.DataFrame, overlay: pd.DataFrame,
+                    ov_by_t: pd.DataFrame, tags: dict) -> None:
+    h = (hist[(hist["ticker"] == sel)].sort_values("week")
+         if not hist.empty and "ticker" in hist.columns else pd.DataFrame())
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Quality (0–100)", _fmt(row.get("quality_score"), "{:.0f}"),
+              "top 20% passes the gate")
+    m2.metric("Cheapness (0–100)", _fmt(row.get("cheapness_score"), "{:.0f}"),
+              "100 = cheapest")
+    m3.metric("EV/FCF vs own history", _fmt(row.get("ev_fcf_self_pct"), "{:.0f}"),
+              "0 = cheapest ever")
+    m4.metric("FCF yield", _fmt(row.get("fcf_yield"), "{:.2%}"))
+    if tags.get(sel):
+        st.markdown("This name: " + _chips_html(tags.get(sel, [])).replace(
+            "font-size:.62em", "font-size:.8em"), unsafe_allow_html=True)
+
+    st.markdown("**The assignment test** — would you own it at the strike?")
+    if not ov_by_t.empty and sel in ov_by_t.index:
+        o = ov_by_t.loc[sel]
+        p = o.get("price")
+        y95, y90 = o.get("fcf_yield_strike_95"), o.get("fcf_yield_strike_90")
+        d1, d2, d3 = st.columns(3)
+        d1.metric("Own it at −5%?", _fmt(y95, "{:.1%}"),
+                  f"strike ≈ ${p * 0.95:,.0f}" if pd.notna(p) else None)
+        d2.metric("Own it at −10%?", _fmt(y90, "{:.1%}"),
+                  f"strike ≈ ${p * 0.90:,.0f}" if pd.notna(p) else None)
+        gate = "✓ liquid" if (pd.notna(o.get("gate_pass")) and bool(o.get("gate_pass"))) else "✗ thin"
+        ivhv = (f"IV {_fmt(o.get('iv_atm'), '{:.0%}')} vs HV {_fmt(o.get('hv_30d'), '{:.0%}')}"
+                if pd.notna(o.get("iv_atm")) else None)
+        d3.metric("Options gate", gate, ivhv)
+        de = o.get("days_to_earnings")
+        if pd.notna(de):
+            st.caption(f"Earnings in ~{de:.0f} days — premium window vs surprise risk.")
+    else:
+        st.info("Options were not pulled for this name (the overlay covers the top "
+                "quality-floor names by cheapness).")
+
+    if not h.empty:
+        _detail_charts(h, sel)
+    else:
+        st.info("No weekly history for this name in this scan.")
+    st.markdown("**Margins — still intact?**")
+    _margin_snapshot(row)
+
+
+# --------------------------------------------------------------- ideas page ---
+def ideas_page():
     scan_dir = _latest_scan()
     if scan_dir is None or not (scan_dir / "config.json").exists():
-        st.error("No scans on disk yet. Open **Data manager** (menu, top right) and run a scan.")
+        st.error("No scans on disk yet. Open **Data manager** and run a scan.")
         return
     cfg_path = scan_dir / "config.json"
     refreshed_at = dt.datetime.fromtimestamp(cfg_path.stat().st_mtime)
-    metrics, cfg, hist, presets, overlay = load_scan(scan_dir, cfg_path.stat().st_mtime)
+    metrics, cfg, hist, overlay = load_scan(scan_dir, cfg_path.stat().st_mtime)
 
-    frames = {**presets, FLOOR_KEY: _floor_passers(metrics)}
-    labels = {name: f"{name} · {len(df)} names" for name, df in frames.items()}
-    hopper = _hopper(metrics, cfg)
-    compounders = set(presets["Compounders on Sale"]["ticker"]) if "Compounders on Sale" in presets else set()
-    tags = {r["ticker"]: _row_tags(r, compounders) for _, r in metrics.iterrows()}
-    with st.sidebar:
-        preset_label = st.selectbox("Thesis preset (Thesis lists tab)", list(labels.values()))
-        preset_name = next(n for n, l in labels.items() if l == preset_label)
-        with st.expander("❔ How the scores work"):
-            st.markdown(SCORE_DOC)
+    hi = _highlighted(metrics)
+    tags = {r["ticker"]: _row_tags(r) for _, r in metrics.iterrows()}
+    ov_by_t = overlay.set_index("ticker") if not overlay.empty else pd.DataFrame()
 
-    st.title("stocks_scanner")
+    st.title("Ideas")
     sub = cfg.get("subset") or {}
     if sub.get("tickers"):
         sub_txt = f"subset of {len(sub['tickers'])} tickers"
@@ -414,231 +425,69 @@ def dashboard_page():
         sub_txt = "full standard group"
     st.caption(
         f"Scan as-of **{cfg.get('asof', scan_dir.name)}** · data as known at that date · "
-        f"{sub_txt} · older scans in the Data manager page"
+        f"{sub_txt} · caches and refresh live on the Data manager page"
     )
 
-    total, scored, floor, hopper_n, flags = _funnel_counts(metrics, cfg)
+    floor_n = int(_gated(metrics)["quality_floor_pass"].fillna(False).sum())
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Last refresh", f"{refreshed_at:%Y-%m-%d %H:%M}")
-    c2.metric("10Y Treasury — the yield bar", _fmt(cfg.get("gs10"), "{:.2%}"))
-    c3.metric("This morning's list", hopper_n, f"of {floor} quality-floor names")
-    c4.metric("In the hunt right now", flags, f"flagship — tightest cut")
-    st.caption(
-        "Good businesses the market has stopped paying up for. Quality filters, cheapness "
-        "ranks, sentiment tags — then you decide by hand."
+    c1.metric("Data as of", cfg.get("asof", scan_dir.name))
+    c2.metric("Last refresh", f"{refreshed_at:%Y-%m-%d %H:%M}")
+    c3.metric("10Y Treasury — the yield bar", _fmt(cfg.get("gs10"), "{:.2%}"))
+    c4.metric("Names in the hunt zone", len(hi), f"of {floor_n} above the quality floor")
+
+    # 1 — the map
+    _hunt_map(metrics, hi, cfg, st.session_state.get("idea_pick"))
+
+    if hi.empty:
+        st.info(
+            "No names inside the hunt zone in this scan — the zone needs top-20% quality "
+            "AND cheapness ≥ 50. Run a fresh scan from the Data manager page."
+        )
+        return
+
+    # 2 — the cards + the compact table (the browse surface)
+    st.markdown(
+        f"**The zone, cheapest first** — {len(hi)} names. `hunt` = the derated-quality "
+        "flag · `beaten` = sector-laggard price action with analyst support · "
+        "`⚠ margins` = a margin ratio slipped below its floor."
     )
-    st.plotly_chart(_funnel_fig(metrics, cfg), width="stretch")
+    _name_cards(hi, hist, ov_by_t, tags, n=8)
 
-    table_cols = [
-        "ticker", "name", "sector", "price", "quality_score", "cheapness_score", "residual",
-        "residual_pct", "ev_ebit", "ev_fcf", "fcf_yield", "ev_fcf_self_pct", "ev_fcf_self_z",
-        "brake_gm", "brake_fcf_margin", "brake_roic", "composite",
-    ]
-    fmt = {
-        "price": "{:.2f}", "quality_score": "{:.1f}", "cheapness_score": "{:.1f}",
-        "residual": "{:.3f}", "residual_pct": "{:.0f}", "ev_ebit": "{:.1f}", "ev_fcf": "{:.1f}",
-        "fcf_yield": "{:.2%}", "ev_fcf_self_pct": "{:.0f}", "ev_fcf_self_z": "{:.2f}",
-        "brake_gm": "{:.3f}", "brake_fcf_margin": "{:.3f}", "brake_roic": "{:.3f}",
-        "composite": "{:.1f}",
-    }
+    table = hi.reset_index(drop=True)
+    show = table[["ticker", "name", "sector", "price", "quality_score", "cheapness_score",
+                  "fcf_yield", "ev_fcf_self_pct"]].copy()
+    show["yield at −5%"] = table["ticker"].map(
+        lambda t: f"{ov_by_t.loc[t, 'fcf_yield_strike_95']:.1%}"
+        if (not ov_by_t.empty and t in ov_by_t.index
+            and pd.notna(ov_by_t.loc[t, "fcf_yield_strike_95"])) else "—")
+    show["tags"] = table["ticker"].map(lambda t: " · ".join(x for x, _ in tags.get(t, [])) or "—")
+    for c, f in {"price": "{:.2f}", "quality_score": "{:.0f}", "cheapness_score": "{:.0f}",
+                 "fcf_yield": "{:.2%}", "ev_fcf_self_pct": "{:.0f}"}.items():
+        show[c] = show[c].map(lambda v, f=f: f.format(v) if pd.notna(v) else "—")
+    col_cfg = {c: st.column_config.Column(label=c, help=COLUMN_DOCS.get(c)) for c in show.columns}
+    event = st.dataframe(show, column_config=col_cfg, width="stretch", height=300,
+                         hide_index=True, on_select="rerun", selection_mode="single-row",
+                         key="ideas_table")
 
-    tab_morning, tab_map, tab_thesis, tab_detail, tab_puts = st.tabs(
-        ["☀️ This morning", "🎯 The hunt map", "🃏 Thesis lists", "🔍 Company detail", "💰 Sell-put math"]
-    )
-    df = frames.get(preset_name, pd.DataFrame())
+    picked = None
+    try:
+        rows = event.selection.rows
+        if rows:
+            picked = table.loc[rows[0], "ticker"]
+    except Exception:
+        picked = None
+    tickers = table["ticker"].tolist()
+    if picked in tickers:
+        st.session_state["idea_pick"] = picked
+    if st.session_state.get("idea_pick") not in tickers:
+        st.session_state["idea_pick"] = tickers[0]
+    sel = st.selectbox("Inspect a company", tickers, key="idea_pick")
 
-    with tab_morning:
-        if hopper.empty:
-            st.info("No quality-floor names pass the cheapness cut in this scan.")
-        else:
-            f1, f2, f3, f4 = st.columns([2, 2, 2, 2])
-            sectors = sorted(hopper["sector"].dropna().unique())
-            pick_sec = f1.multiselect("Sector", sectors, default=sectors)
-            min_yield = f2.slider("Min FCF yield %", 0.0, 10.0, 0.0, 0.5) / 100
-            max_self = f3.slider("Max vs-own-history pct", 0, 100, 100, 5,
-                                 help="0 = cheapest ever in its own 5y range")
-            liq_only = f4.toggle("Put-liquid only", help="Keep only names passing the "
-                                                      "options gate (OI ≥ 500, spread ≤ 10%)")
-            ov_by_t = overlay.set_index("ticker") if not overlay.empty else pd.DataFrame()
-            view = hopper[hopper["sector"].isin(pick_sec)
-                          & (hopper["fcf_yield"].fillna(0) >= min_yield)
-                          & (hopper["ev_fcf_self_pct"].fillna(100) <= max_self)].copy()
-            if liq_only and not ov_by_t.empty:
-                ok = set(ov_by_t[ov_by_t["gate_pass"].fillna(False)].index)
-                view = view[view["ticker"].isin(ok)]
-            st.caption(
-                f"**{len(view)} names** — the quality floor (top 20%) that is also cheap: "
-                "vs its own 5y history (≤ 50th pct) or paying a real FCF yield (≥ max(4%, 10Y)). "
-                "Tags: `hunt` = flagship flag · `beaten` = sector-laggard momentum with analyst "
-                "support · `⚠ margins` = a margin brake is below its floor — look before you leap."
-            )
-            _name_cards(view, hist, "this morning's list", n=8, tags=tags)
-            show = view[["ticker", "name", "sector", "price", "fcf_yield", "ev_fcf",
-                         "ev_fcf_self_pct", "cheapness_score", "quality_score"]].copy()
-            show["tags"] = show["ticker"].map(lambda t: " · ".join(x for x, _ in tags.get(t, [])) or "—")
-            if not ov_by_t.empty and "fcf_yield_strike_95" in ov_by_t:
-                show["yield at −5%"] = show["ticker"].map(
-                    lambda t: f"{ov_by_t.loc[t, 'fcf_yield_strike_95']:.1%}"
-                    if t in ov_by_t.index and pd.notna(ov_by_t.loc[t, "fcf_yield_strike_95"]) else "—")
-            for c, f in {"price": "{:.2f}", "fcf_yield": "{:.2%}", "ev_fcf": "{:.1f}",
-                         "ev_fcf_self_pct": "{:.0f}", "cheapness_score": "{:.0f}",
-                         "quality_score": "{:.0f}"}.items():
-                if c in show.columns:
-                    show[c] = show[c].map(lambda v, f=f: f.format(v) if pd.notna(v) else "—")
-            st.dataframe(show, width="stretch", height=420, hide_index=True)
-
-    with tab_map:
-        _hunt_map(metrics, hopper, cfg, "this morning's list")
-
-    with tab_thesis:
-        info = PRESET_INFO.get(preset_name, {})
-        with st.expander("What this preset filters by", expanded=True):
-            st.markdown("\n".join(f"- {f}" for f in info.get("filters", [])))
-            st.markdown(f"**Ranked by:** {info.get('rank', '—')}")
-            if info.get("note"):
-                st.markdown(f"*{info['note']}*")
-        if df.empty:
-            st.info(
-                f"No names in **{preset_name}** for this scan. The conditions above are all "
-                f"AND-ed — widen your view with “{FLOOR_KEY}” and use Company detail to see "
-                f"which condition a candidate name fails."
-            )
-        else:
-            _name_cards(df, hist, preset_name, n=6, tags=tags)
-            cols = [c for c in table_cols if c in df.columns]
-            show = df[cols].copy()
-            for c, f in fmt.items():
-                if c in show.columns:
-                    show[c] = show[c].map(lambda v, f=f: f.format(v) if pd.notna(v) else "—")
-            col_cfg = {
-                c: st.column_config.Column(
-                    label="composite (display-only)" if c == "composite" else c,
-                    help=COLUMN_DOCS.get(c),
-                )
-                for c in show.columns
-            }
-            st.dataframe(show, column_config=col_cfg, width="stretch", height=420)
-            st.caption(
-                "Flagship ranked by valuation residual, other presets by CheapnessScore. The "
-                "wide floor-passers view is computed live from metrics.csv with the same rule "
-                "the scan uses. Composite is display-only — nothing is ranked by it (doc 05 §2.3)."
-            )
-
-    with tab_detail:
-        tickers = sorted(metrics["ticker"].unique())
-        default_t = hopper.iloc[0]["ticker"] if not hopper.empty else ("ADBE" if "ADBE" in tickers else tickers[0])
-        sel = st.selectbox("Company", tickers, index=tickers.index(default_t))
-        row = metrics[metrics["ticker"] == sel].iloc[0]
-        ov_row = None
-        if not overlay.empty and (overlay["ticker"] == sel).any():
-            ov_row = overlay[overlay["ticker"] == sel].iloc[0]
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Quality (0–100)", _fmt(row.get("quality_score"), "{:.0f}"),
-                  "top 20% passes the gate")
-        m2.metric("Cheapness (0–100)", _fmt(row.get("cheapness_score"), "{:.0f}"),
-                  "100 = cheapest")
-        m3.metric("EV/FCF vs own history", _fmt(row.get("ev_fcf_self_pct"), "{:.0f}"),
-                  "0 = cheapest ever")
-        m4.metric("FCF yield", _fmt(row.get("fcf_yield"), "{:.2%}"))
-        if tags.get(sel):
-            st.markdown(
-                "This name: " + _chips_html(tags[sel]).replace("font-size:.62em", "font-size:.8em"),
-                unsafe_allow_html=True,
-            )
-        if ov_row is not None:
-            p = ov_row.get("price")
-            y95, y90 = ov_row.get("fcf_yield_strike_95"), ov_row.get("fcf_yield_strike_90")
-            d1, d2, d3 = st.columns(3)
-            d1.metric("Own it at −5%?", _fmt(y95, "{:.1%}"),
-                      f"strike ≈ ${p * 0.95:,.0f}" if pd.notna(p) else None)
-            d2.metric("Own it at −10%?", _fmt(y90, "{:.1%}"),
-                      f"strike ≈ ${p * 0.90:,.0f}" if pd.notna(p) else None)
-            d3.metric("Options gate", "✓ liquid" if ov_row.get("gate_pass") else "✗ thin",
-                      f"IV {_fmt(ov_row.get('iv_atm'), '{:.0%}')} vs HV {_fmt(ov_row.get('hv_30d'), '{:.0%}')}"
-                      if pd.notna(ov_row.get("iv_atm")) else None)
-            st.caption(
-                "The assignment test: FCF yield you'd lock in if put the stock at each strike. "
-                "Would you own it there? That is the whole question."
-            )
-        if not hist.empty and "ticker" in hist.columns and (hist["ticker"] == sel).any():
-            h = hist[hist["ticker"] == sel].sort_values("week")
-            g1, g2 = st.columns(2)
-            with g1:
-                fig1 = go.Figure()
-                fig1.add_trace(go.Scatter(x=h["week"], y=h["ev_fcf"], name="EV/FCF (adj)"))
-                med = h["ev_fcf"].median()
-                if pd.notna(med):
-                    fig1.add_hline(y=med, line_dash="dot", annotation_text=f"5y median {med:.1f}x")
-                    fig1.add_hline(y=0.8 * med, line_dash="dash", line_color="#2ca02c",
-                                   annotation_text="0.8× median (flag arm)")
-                cur = h["ev_fcf"].dropna()
-                if not cur.empty:
-                    fig1.add_trace(go.Scatter(
-                        x=[h.loc[cur.index[-1], "week"]], y=[cur.iloc[-1]], mode="markers",
-                        name="current", showlegend=False,
-                        marker=dict(size=11, color="#e4572e", symbol="diamond",
-                                    line=dict(width=2, color="white")),
-                        hovertemplate=f"<b>{sel} now: {cur.iloc[-1]:.1f}x</b><extra></extra>",
-                    ))
-                else:
-                    st.caption("No valid EV/FCF history points for this ticker.")
-                fig1.update_layout(height=340, title="EV/FCF vs own history (SELF window)",
-                                   yaxis_title="×")
-                st.plotly_chart(fig1, width="stretch")
-            with g2:
-                fig2 = go.Figure()
-                fig2.add_trace(go.Scatter(x=h["week"], y=h["fcf_adj_ttm"] / 1e9, name="FCF (adj, TTM) $B"))
-                fig2.add_trace(go.Scatter(x=h["week"], y=h["ni_ttm"] / 1e9, name="Net income (TTM) $B"))
-                fig2.update_layout(height=340, title="Cash vs earnings (as-known TTM)", yaxis_title="$B")
-                st.plotly_chart(fig2, width="stretch")
-        else:
-            st.info(f"No weekly history for {sel} in this scan.")
-        ev = row.get("evidence_derated")
-        if isinstance(ev, str) and ev:
-            with st.expander("Flag evidence (derated_quality)"):
-                st.json(json.loads(ev))
-
-    with tab_puts:
-        if overlay.empty:
-            st.info("No options data for this scan (run without --skip-options).")
-        else:
-            def _badge(v):
-                if v is None or (not isinstance(v, (bool, str)) and pd.isna(v)):
-                    return "—"
-                return "✓" if (v is True or str(v).strip().lower() == "true") else "✗"
-
-            ov_cols = [c for c in [
-                "ticker", "price", "fcf_yield_strike_95", "fcf_yield_strike_90",
-                "days_to_earnings", "badge_numbers_stale", "badge_event_window",
-                "iv_atm", "hv_30d", "iv_vs_hv", "gate_oi", "gate_spread_pct", "gate_pass",
-            ] if c in overlay.columns]
-            show = overlay[ov_cols].copy()
-            if "gate_pass" in overlay.columns:  # sellable first, then richest strike yield
-                show = show.assign(_g=overlay["gate_pass"].fillna(False).astype(bool),
-                                   _y=overlay["fcf_yield_strike_95"].astype(float)).sort_values(
-                    ["_g", "_y"], ascending=[False, False]).drop(columns=["_g", "_y"])
-            for c in ("fcf_yield_strike_95", "fcf_yield_strike_90", "iv_atm", "hv_30d",
-                      "iv_vs_hv", "gate_spread_pct"):
-                if c in show.columns:
-                    show[c] = show[c].map(lambda v: f"{v:.2%}" if pd.notna(v) else "—")
-            for c in ("badge_numbers_stale", "badge_event_window", "gate_pass"):
-                if c in show.columns:
-                    show[c] = show[c].map(_badge)
-            st.dataframe(show, width="stretch", hide_index=True)
-            st.caption(
-                "Now covering every quality-floor name (v0.5.4), not just the flagship. "
-                "Assignment test: FCF yield if put the stock at −5%/−10%. The two DTE badges read "
-                "the same number oppositely: numbers_stale = equity view (beware stale TTM), "
-                "event_window = put view (premium window). IV/HV and the gate are display-only — "
-                "the overlay never ranks (doc 07)."
-            )
-
-    with st.expander("Unscored / gate failures (coverage)"):
-        cov = scan_dir / "coverage.csv"
-        if cov.exists() and cov.read_text().strip():
-            st.dataframe(pd.read_csv(cov), width="stretch")
-        else:
-            st.write("none")
+    # 3 — the detail, under everything, only once a name is picked
+    row = table[table["ticker"] == sel].iloc[0]
+    st.divider()
+    st.subheader(f"{sel} — {row.get('name') or ''}")
+    _company_detail(sel, metrics[metrics["ticker"] == sel].iloc[0], hist, overlay, ov_by_t, tags)
 
 
 # --------------------------------------------------------- data manager page --
@@ -649,7 +498,7 @@ def manager_page():
 
 # ------------------------------------------------------------------ routing --
 pg = st.navigation([
-    st.Page(dashboard_page, title="Dashboard", icon="📊", default=True, url_path="dashboard"),
+    st.Page(ideas_page, title="Ideas", icon="💡", default=True, url_path="ideas"),
     st.Page(manager_page, title="Data manager", icon="🗂️", url_path="data"),
 ])
 pg.run()

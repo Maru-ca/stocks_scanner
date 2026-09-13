@@ -6,7 +6,18 @@ standard screening (valuation, quality, sentiment) and a cash-secured-put overla
 
 **Status: implemented.** Search methodology frozen at spec v0.4; data contract v0.5
 (docs 01–08). All phases built: data layer, feature/self-history engine, scoring,
-flags, presets, put overlay, scan artifacts, tests, Streamlit dashboard.
+flags, put overlay, scan artifacts, tests, Streamlit UI.
+
+## The UI
+
+Two pages. **Ideas** (default) is one scrolling page for the manual
+cash-secured-put workflow: the hunt map (quality × cheapness, the shaded zone),
+tagged cards for the names inside the zone (cheapest first, with FCF yield now
+and at −5%), a compact table, and a company detail that appears under the cards
+once you pick a ticker (assignment test, price/EV-FCF/FCF-yield/cash charts,
+margin snapshot). **Data manager** re-downloads everything and re-scans, shows
+the caches and the data-source inventory. Every number is display-only — the
+scanner ranks, the human decides.
 
 ## Quick start
 
@@ -91,7 +102,7 @@ scanner/            package (config = every spec threshold)
   overlay.py        put overlay (strike-implied FCF yields, DTE badges, IV/HV, gate)
   fmp.py            vintaged consensus snapshots (revision proxy)
   scan.py           orchestration + CLI + artifacts
-dashboard/app.py    Streamlit UI (presets, quadrant, drill-down, overlay)
+dashboard/app.py    Streamlit UI (Ideas page: hunt map, cards, detail; Data manager)
 tests/              assembly / metrics / scoring+flags (incl. Adobe-pass, PayPal-fail)
 data/reference/     GICS sub-industry → industry-group map
 docs/specs/         the frozen specifications (01–08 + decision log)
