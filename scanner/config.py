@@ -88,7 +88,7 @@ OPTIONS_MIN_DTE = 21            # IV row: nearest expiry >= 21 DTE
 OPTIONS_GATE_TARGET_DTE = 35    # liquidity gate: ~30-45 DTE (nearest 35)
 OPTIONS_GATE_MIN_OI = 500
 OPTIONS_GATE_MAX_SPREAD = 0.10  # (ask-bid)/mid
-OVERLAY_TOP_N = 20              # compute option-chain columns for top-N flagship names
+OVERLAY_TOP_N = 40              # option-chain columns for the top-N quality-floor names (v0.5.4)
 
 # --- MVP score inputs (doc 08 §5, coverage rule) -------------------------------
 MVP_SCORE_INPUTS = [

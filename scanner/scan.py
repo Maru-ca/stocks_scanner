@@ -254,11 +254,18 @@ def run_scan(
     # 5. presets (doc 05 §4)
     flagship, beaten, compounders = _preset_frames(df, gs10)
 
-    # 6. overlay on the flagship list (display-only, doc 07) — must never kill the scan
+    # 6. overlay on the quality-floor list (display-only, doc 07) — must never kill
+    # the scan. v0.5.4: widened from flagship-only to the gated floor passers, the
+    # names a put hopper would actually price; ranking still never sees options.
+    floor_list = df[
+        df["gates_pass"].fillna(False)
+        & (df["input_coverage"] >= config.MIN_SCORE_INPUT_COVERAGE)
+        & df["quality_floor_pass"].fillna(False)
+    ].sort_values("cheapness_score", ascending=False)
     ov_df = pd.DataFrame()
-    if not skip_options and len(flagship):
+    if not skip_options and len(floor_list):
         try:
-            ov_df = OV.build_overlay(flagship.head(config.OVERLAY_TOP_N), asof)
+            ov_df = OV.build_overlay(floor_list.head(config.OVERLAY_TOP_N), asof)
         except Exception as e:
             print(f"[scan] overlay failed ({type(e).__name__}: {e}) — continuing without it")
             ov_df = pd.DataFrame()

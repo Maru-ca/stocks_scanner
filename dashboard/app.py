@@ -199,20 +199,54 @@ def _floor_passers(metrics: pd.DataFrame) -> pd.DataFrame:
     return g[g["quality_floor_pass"].fillna(False)].sort_values("cheapness_score", ascending=False)
 
 
-def _funnel_counts(metrics: pd.DataFrame) -> tuple[int, int, int, int]:
+def _hopper(metrics: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    """The default morning list (v0.5.4): quality-floor names that are also cheap —
+    vs their own history (SELF pct ≤ 50) OR paying you outright (FCF yield ≥ max(4%, 10Y)).
+    Ranked by cheapness. This is a product view on the frozen methodology, not a new score."""
+    fp = _floor_passers(metrics)
+    gs10 = cfg.get("gs10") if cfg.get("gs10") is not None else 0.0
+    return fp[(fp["ev_fcf_self_pct"] <= 50) | (fp["fcf_yield"] >= max(0.04, gs10 or 0))]
+
+
+def _row_tags(row, compounders: set) -> list:
+    """Flag chips for one metrics row: thesis tags + brake warnings (v0.5.4: flags
+    became tags on the hopper; brakes warn instead of hiding names)."""
+    tags = []
+    if bool(row.get("flag_derated_quality") or False):
+        tags.append(("hunt", "#e4572e"))
+    if bool(row.get("flag_beaten_but_delivering") or False):
+        tags.append(("beaten", "#4e79a7"))
+    if row.get("ticker") in compounders:
+        tags.append(("compounder", "#9467bd"))
+    if any(pd.notna(row.get(k)) and float(row.get(k)) < t for k, t in [
+        ("brake_gm", 0.97), ("brake_fcf_margin", 0.95), ("brake_roic", 0.90),
+    ]):
+        tags.append(("⚠ margins", "#b07d2b"))
+    return tags
+
+
+def _chips_html(tags: list) -> str:
+    return "".join(
+        f"<span style='font-size:.62em;padding:1px 7px;border-radius:9px;"
+        f"color:{c};border:1px solid {c};margin-left:4px;white-space:nowrap'>{t}</span>"
+        for t, c in tags
+    )
+
+
+def _funnel_counts(metrics: pd.DataFrame, cfg: dict) -> tuple[int, int, int, int, int]:
     g = _gated(metrics)
-    floor = int(g["quality_floor_pass"].fillna(False).sum())
+    floor_df = g[g["quality_floor_pass"].fillna(False)]
     flags = int(g["flag_derated_quality"].fillna(False).sum()) if "flag_derated_quality" in g else 0
-    return len(metrics), len(g), floor, flags
+    return len(metrics), len(g), len(floor_df), len(_hopper(metrics, cfg)), flags
 
 
-def _funnel_fig(metrics: pd.DataFrame) -> go.Figure:
-    total, scored, floor, flags = _funnel_counts(metrics)
+def _funnel_fig(metrics: pd.DataFrame, cfg: dict) -> go.Figure:
+    total, scored, floor, hopper, flags = _funnel_counts(metrics, cfg)
     fig = go.Figure(go.Funnel(
-        y=["Analyzed", "Scored & liquid", "Above the quality floor", "The hunt (flagship)"],
-        x=[total, scored, floor, flags],
+        y=["Analyzed", "Scored & liquid", "Quality floor", "This morning's list", "The hunt (flagship)"],
+        x=[total, scored, floor, hopper, flags],
         textinfo="value",
-        marker={"color": ["#8ea0b5", "#4e79a7", "#59a14f", "#e4572e"]},
+        marker={"color": ["#8ea0b5", "#4e79a7", "#59a14f", "#f28e2b", "#e4572e"]},
         connector={"line": {"color": "rgba(128,128,128,0.25)"}},
     ))
     fig.update_layout(height=240, margin=dict(l=8, r=8, t=4, b=4), showlegend=False)
@@ -254,13 +288,15 @@ def _score_bar(label: str, value, color: str) -> str:
     )
 
 
-def _name_cards(df: pd.DataFrame, hist: pd.DataFrame, preset_name: str, n: int = 6) -> None:
+def _name_cards(df: pd.DataFrame, hist: pd.DataFrame, preset_name: str, n: int = 6,
+                tags: dict | None = None) -> None:
     """Graphical preset cards: 5y EV/FCF sparkline + score bars + headline stats."""
     info = PRESET_INFO.get(preset_name, {})
     st.caption(
         f"Top {min(n, len(df))} of **{preset_name}** — ranked by {info.get('rank', '—')}. "
         "The line is 5 years of EV/FCF: falling means the market pays less for the same cash flow."
     )
+    tags = tags or {}
     cards = []
     for _, r in df.head(n).iterrows():
         y: list = []
@@ -280,11 +316,12 @@ def _name_cards(df: pd.DataFrame, hist: pd.DataFrame, preset_name: str, n: int =
         med_s = f" · 5y median {med:.1f}x" if med else ""
         sector = str(r.get("sector") or "")[:20]
         name = str(r.get("name") or "")[:22]
+        chips = _chips_html(tags.get(r["ticker"], []))
         cards.append(
             f"<div style='background:rgba(128,128,128,.07);border:1px solid rgba(128,128,128,.22);"
             f"border-radius:12px;padding:12px 14px'>"
             f"<div style='font-size:1.05em'><b>{r['ticker']}</b> "
-            f"<span style='opacity:.65;font-size:.85em'>{name}</span></div>"
+            f"<span style='opacity:.65;font-size:.85em'>{name}</span>{chips}</div>"
             f"<div style='font-size:.72em;opacity:.6;margin-bottom:6px'>{sector} · {price_s}</div>"
             f"{_spark_svg(y)}"
             f"<div style='margin-top:6px'>"
@@ -358,8 +395,11 @@ def dashboard_page():
 
     frames = {**presets, FLOOR_KEY: _floor_passers(metrics)}
     labels = {name: f"{name} · {len(df)} names" for name, df in frames.items()}
+    hopper = _hopper(metrics, cfg)
+    compounders = set(presets["Compounders on Sale"]["ticker"]) if "Compounders on Sale" in presets else set()
+    tags = {r["ticker"]: _row_tags(r, compounders) for _, r in metrics.iterrows()}
     with st.sidebar:
-        preset_label = st.selectbox("Preset", list(labels.values()))
+        preset_label = st.selectbox("Thesis preset (Thesis lists tab)", list(labels.values()))
         preset_name = next(n for n, l in labels.items() if l == preset_label)
         with st.expander("❔ How the scores work"):
             st.markdown(SCORE_DOC)
@@ -377,17 +417,17 @@ def dashboard_page():
         f"{sub_txt} · older scans in the Data manager page"
     )
 
-    total, scored, floor, flags = _funnel_counts(metrics)
+    total, scored, floor, hopper_n, flags = _funnel_counts(metrics, cfg)
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Last refresh", f"{refreshed_at:%Y-%m-%d %H:%M}")
     c2.metric("10Y Treasury — the yield bar", _fmt(cfg.get("gs10"), "{:.2%}"))
-    c3.metric("Above the quality floor", floor, f"top 20% of {scored} scored")
-    c4.metric("In the hunt right now", flags, f"of {floor} floor names")
+    c3.metric("This morning's list", hopper_n, f"of {floor} quality-floor names")
+    c4.metric("In the hunt right now", flags, f"flagship — tightest cut")
     st.caption(
-        "The Adobe/Oracle pattern: a great business the market has stopped paying up for. "
-        "Quality filters, cheapness ranks, sentiment flags."
+        "Good businesses the market has stopped paying up for. Quality filters, cheapness "
+        "ranks, sentiment tags — then you decide by hand."
     )
-    st.plotly_chart(_funnel_fig(metrics), width="stretch")
+    st.plotly_chart(_funnel_fig(metrics, cfg), width="stretch")
 
     table_cols = [
         "ticker", "name", "sector", "price", "quality_score", "cheapness_score", "residual",
@@ -402,15 +442,55 @@ def dashboard_page():
         "composite": "{:.1f}",
     }
 
-    tab_map, tab_cards, tab_detail, tab_overlay, tab_table = st.tabs(
-        ["🎯 The hunt map", "🃏 Top names", "🔍 Company detail", "💰 Put overlay (info only)", "🧾 Full table"]
+    tab_morning, tab_map, tab_thesis, tab_detail, tab_puts = st.tabs(
+        ["☀️ This morning", "🎯 The hunt map", "🃏 Thesis lists", "🔍 Company detail", "💰 Sell-put math"]
     )
     df = frames.get(preset_name, pd.DataFrame())
 
-    with tab_map:
-        _hunt_map(metrics, df, cfg, preset_name)
+    with tab_morning:
+        if hopper.empty:
+            st.info("No quality-floor names pass the cheapness cut in this scan.")
+        else:
+            f1, f2, f3, f4 = st.columns([2, 2, 2, 2])
+            sectors = sorted(hopper["sector"].dropna().unique())
+            pick_sec = f1.multiselect("Sector", sectors, default=sectors)
+            min_yield = f2.slider("Min FCF yield %", 0.0, 10.0, 0.0, 0.5) / 100
+            max_self = f3.slider("Max vs-own-history pct", 0, 100, 100, 5,
+                                 help="0 = cheapest ever in its own 5y range")
+            liq_only = f4.toggle("Put-liquid only", help="Keep only names passing the "
+                                                      "options gate (OI ≥ 500, spread ≤ 10%)")
+            ov_by_t = overlay.set_index("ticker") if not overlay.empty else pd.DataFrame()
+            view = hopper[hopper["sector"].isin(pick_sec)
+                          & (hopper["fcf_yield"].fillna(0) >= min_yield)
+                          & (hopper["ev_fcf_self_pct"].fillna(100) <= max_self)].copy()
+            if liq_only and not ov_by_t.empty:
+                ok = set(ov_by_t[ov_by_t["gate_pass"].fillna(False)].index)
+                view = view[view["ticker"].isin(ok)]
+            st.caption(
+                f"**{len(view)} names** — the quality floor (top 20%) that is also cheap: "
+                "vs its own 5y history (≤ 50th pct) or paying a real FCF yield (≥ max(4%, 10Y)). "
+                "Tags: `hunt` = flagship flag · `beaten` = sector-laggard momentum with analyst "
+                "support · `⚠ margins` = a margin brake is below its floor — look before you leap."
+            )
+            _name_cards(view, hist, "this morning's list", n=8, tags=tags)
+            show = view[["ticker", "name", "sector", "price", "fcf_yield", "ev_fcf",
+                         "ev_fcf_self_pct", "cheapness_score", "quality_score"]].copy()
+            show["tags"] = show["ticker"].map(lambda t: " · ".join(x for x, _ in tags.get(t, [])) or "—")
+            if not ov_by_t.empty and "fcf_yield_strike_95" in ov_by_t:
+                show["yield at −5%"] = show["ticker"].map(
+                    lambda t: f"{ov_by_t.loc[t, 'fcf_yield_strike_95']:.1%}"
+                    if t in ov_by_t.index and pd.notna(ov_by_t.loc[t, "fcf_yield_strike_95"]) else "—")
+            for c, f in {"price": "{:.2f}", "fcf_yield": "{:.2%}", "ev_fcf": "{:.1f}",
+                         "ev_fcf_self_pct": "{:.0f}", "cheapness_score": "{:.0f}",
+                         "quality_score": "{:.0f}"}.items():
+                if c in show.columns:
+                    show[c] = show[c].map(lambda v, f=f: f.format(v) if pd.notna(v) else "—")
+            st.dataframe(show, width="stretch", height=420, hide_index=True)
 
-    with tab_cards:
+    with tab_map:
+        _hunt_map(metrics, hopper, cfg, "this morning's list")
+
+    with tab_thesis:
         info = PRESET_INFO.get(preset_name, {})
         with st.expander("What this preset filters by", expanded=True):
             st.markdown("\n".join(f"- {f}" for f in info.get("filters", [])))
@@ -424,12 +504,7 @@ def dashboard_page():
                 f"which condition a candidate name fails."
             )
         else:
-            _name_cards(df, hist, preset_name)
-
-    with tab_table:
-        if df.empty:
-            st.info(f"No names in **{preset_name}** for this scan — see Top names for why.")
-        else:
+            _name_cards(df, hist, preset_name, n=6, tags=tags)
             cols = [c for c in table_cols if c in df.columns]
             show = df[cols].copy()
             for c, f in fmt.items():
@@ -442,7 +517,7 @@ def dashboard_page():
                 )
                 for c in show.columns
             }
-            st.dataframe(show, column_config=col_cfg, width="stretch", height=520)
+            st.dataframe(show, column_config=col_cfg, width="stretch", height=420)
             st.caption(
                 "Flagship ranked by valuation residual, other presets by CheapnessScore. The "
                 "wide floor-passers view is computed live from metrics.csv with the same rule "
@@ -451,8 +526,12 @@ def dashboard_page():
 
     with tab_detail:
         tickers = sorted(metrics["ticker"].unique())
-        sel = st.selectbox("Company", tickers, index=tickers.index("ADBE") if "ADBE" in tickers else 0)
+        default_t = hopper.iloc[0]["ticker"] if not hopper.empty else ("ADBE" if "ADBE" in tickers else tickers[0])
+        sel = st.selectbox("Company", tickers, index=tickers.index(default_t))
         row = metrics[metrics["ticker"] == sel].iloc[0]
+        ov_row = None
+        if not overlay.empty and (overlay["ticker"] == sel).any():
+            ov_row = overlay[overlay["ticker"] == sel].iloc[0]
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Quality (0–100)", _fmt(row.get("quality_score"), "{:.0f}"),
                   "top 20% passes the gate")
@@ -461,6 +540,26 @@ def dashboard_page():
         m3.metric("EV/FCF vs own history", _fmt(row.get("ev_fcf_self_pct"), "{:.0f}"),
                   "0 = cheapest ever")
         m4.metric("FCF yield", _fmt(row.get("fcf_yield"), "{:.2%}"))
+        if tags.get(sel):
+            st.markdown(
+                "This name: " + _chips_html(tags[sel]).replace("font-size:.62em", "font-size:.8em"),
+                unsafe_allow_html=True,
+            )
+        if ov_row is not None:
+            p = ov_row.get("price")
+            y95, y90 = ov_row.get("fcf_yield_strike_95"), ov_row.get("fcf_yield_strike_90")
+            d1, d2, d3 = st.columns(3)
+            d1.metric("Own it at −5%?", _fmt(y95, "{:.1%}"),
+                      f"strike ≈ ${p * 0.95:,.0f}" if pd.notna(p) else None)
+            d2.metric("Own it at −10%?", _fmt(y90, "{:.1%}"),
+                      f"strike ≈ ${p * 0.90:,.0f}" if pd.notna(p) else None)
+            d3.metric("Options gate", "✓ liquid" if ov_row.get("gate_pass") else "✗ thin",
+                      f"IV {_fmt(ov_row.get('iv_atm'), '{:.0%}')} vs HV {_fmt(ov_row.get('hv_30d'), '{:.0%}')}"
+                      if pd.notna(ov_row.get("iv_atm")) else None)
+            st.caption(
+                "The assignment test: FCF yield you'd lock in if put the stock at each strike. "
+                "Would you own it there? That is the whole question."
+            )
         if not hist.empty and "ticker" in hist.columns and (hist["ticker"] == sel).any():
             h = hist[hist["ticker"] == sel].sort_values("week")
             g1, g2 = st.columns(2)
@@ -499,9 +598,9 @@ def dashboard_page():
             with st.expander("Flag evidence (derated_quality)"):
                 st.json(json.loads(ev))
 
-    with tab_overlay:
+    with tab_puts:
         if overlay.empty:
-            st.info("No overlay for this scan (flagship empty or run with --skip-options).")
+            st.info("No options data for this scan (run without --skip-options).")
         else:
             def _badge(v):
                 if v is None or (not isinstance(v, (bool, str)) and pd.isna(v)):
@@ -514,6 +613,10 @@ def dashboard_page():
                 "iv_atm", "hv_30d", "iv_vs_hv", "gate_oi", "gate_spread_pct", "gate_pass",
             ] if c in overlay.columns]
             show = overlay[ov_cols].copy()
+            if "gate_pass" in overlay.columns:  # sellable first, then richest strike yield
+                show = show.assign(_g=overlay["gate_pass"].fillna(False).astype(bool),
+                                   _y=overlay["fcf_yield_strike_95"].astype(float)).sort_values(
+                    ["_g", "_y"], ascending=[False, False]).drop(columns=["_g", "_y"])
             for c in ("fcf_yield_strike_95", "fcf_yield_strike_90", "iv_atm", "hv_30d",
                       "iv_vs_hv", "gate_spread_pct"):
                 if c in show.columns:
@@ -521,8 +624,9 @@ def dashboard_page():
             for c in ("badge_numbers_stale", "badge_event_window", "gate_pass"):
                 if c in show.columns:
                     show[c] = show[c].map(_badge)
-            st.dataframe(show, width="stretch")
+            st.dataframe(show, width="stretch", hide_index=True)
             st.caption(
+                "Now covering every quality-floor name (v0.5.4), not just the flagship. "
                 "Assignment test: FCF yield if put the stock at −5%/−10%. The two DTE badges read "
                 "the same number oppositely: numbers_stale = equity view (beware stale TTM), "
                 "event_window = put view (premium window). IV/HV and the gate are display-only — "
