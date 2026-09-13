@@ -2,12 +2,13 @@
 
 Two pages: **Ideas** (the default) and **Data manager** (ops). Ideas is one
 scrolling page for the manual cash-secured-put workflow: the hunt map (quality
-vs residual — cheaper-than-quality to the right), tagged cards for the names
-inside the zone, and a company detail that appears once you pick a ticker.
+vs residual — cheaper-than-quality to the right), tagged cards for the
+highlights, and a company detail that appears once you pick a ticker.
 Cheapness on this page means the valuation residual: log(EV/FCF) minus the
-multiple this ROIC/industry usually gets. SELF (vs own 5y history) stays a
-chart, never a rank. Every number is display-only — the scanner ranks, the
-human decides.
+multiple this ROIC/industry usually gets; the highlights require the quality
+floor, residual < 0, ROIC ≥ 10% and FCF yield ≥ max(4%, 10Y). SELF (vs own 5y
+history) stays a chart, never a rank. Every number is display-only — the
+scanner ranks, the human decides.
 
 Run: streamlit run dashboard/app.py   (or ./control.sh start)
 """
@@ -95,12 +96,19 @@ def _gated(metrics: pd.DataFrame) -> pd.DataFrame:
     ]
 
 
-def _highlighted(metrics: pd.DataFrame) -> pd.DataFrame:
-    """The hunt zone, as a list: gated + quality floor + residual < 0 — cheaper
-    than the multiple this ROIC/industry usually gets. Most negative residual first."""
+def _highlighted(metrics: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    """The highlights: gated + quality floor + residual < 0 + absolute holdability —
+    ROIC ≥ 10% (5y avg) and FCF yield ≥ max(4%, 10Y). Missing ROIC or yield fails.
+    Ranked by residual ascending: most under-priced vs its quality first."""
+    gs10 = cfg.get("gs10") if cfg.get("gs10") is not None else 0.0
+    bar = max(0.04, gs10 or 0)
     g = _gated(metrics)
-    hi = g[g["quality_floor_pass"].fillna(False)
-           & g["residual"].notna() & (g["residual"] < 0)]
+    hi = g[
+        g["quality_floor_pass"].fillna(False)
+        & g["residual"].notna() & (g["residual"] < 0)
+        & g["roic"].notna() & (g["roic"] >= 0.10)
+        & g["fcf_yield"].notna() & (g["fcf_yield"] >= bar)
+    ]
     return hi.sort_values("residual", ascending=True)
 
 
@@ -116,6 +124,8 @@ def _row_tags(row) -> list:
     roic = row.get("roic")
     if pd.notna(roic) and float(roic) < 0.10:
         tags.append(("⚠ ROIC < 10%", "#8ea0b5"))
+    if str(row.get("sector") or "") in ("Energy", "Materials"):
+        tags.append(("⚠ cycle", "#76b7b2"))
     return tags
 
 
@@ -216,7 +226,8 @@ def _name_cards(df: pd.DataFrame, hist: pd.DataFrame, ov_by_t: pd.DataFrame,
 # ---------------------------------------------------------------- the charts ---
 def _hunt_map(metrics: pd.DataFrame, hi: pd.DataFrame, cfg: dict, selected: str | None) -> None:
     """Quality (y) × residual (x, plotted as −residual so cheaper sits RIGHT): grey =
-    scored names with a residual, orange = inside the zone (floor + residual < 0).
+    scored names with a residual, orange = the highlights (floor + residual < 0
+    + ROIC ≥ 10% + FCF yield ≥ max(4%, 10Y)). The selected ticker is starred.
     The selected ticker is starred."""
     pts = metrics[metrics["quality_score"].notna() & metrics["residual"].notna()].copy()
     pts["x"] = -pts["residual"]          # cheaper (more negative residual) -> right
@@ -267,14 +278,15 @@ def _hunt_map(metrics: pd.DataFrame, hi: pd.DataFrame, cfg: dict, selected: str 
         height=520,
         xaxis_title="cheaper than the ROIC-implied multiple → (−residual)",
         yaxis_title="higher quality ↑ (QualityScore)",
-        title=f"Quality vs price-for-quality — {len(zone)} names cheaper than their quality implies",
+        title=f"Quality vs price-for-quality — {len(zone)} names in the highlights",
         hovermode="closest",
     )
     st.plotly_chart(fig, width="stretch")
     st.caption(
-        "Grey = scored names with a residual. Orange = above the quality floor AND residual < 0 — "
-        "trading cheaper than the multiple this ROIC and industry usually get. Those names "
-        "continue below, most negative residual first."
+        "Grey = scored names with a residual; the shaded region is residual < 0 above the "
+        "quality floor. Orange is the tighter highlights list: floor + residual < 0 + "
+        "ROIC ≥ 10% + FCF yield ≥ max(4%, 10Y) — cash-cheap and viable, not just "
+        "under-priced vs peers. Those names continue below, most negative residual first."
     )
 
 
@@ -421,7 +433,7 @@ def ideas_page():
     refreshed_at = dt.datetime.fromtimestamp(cfg_path.stat().st_mtime)
     metrics, cfg, hist, overlay = load_scan(scan_dir, cfg_path.stat().st_mtime)
 
-    hi = _highlighted(metrics)
+    hi = _highlighted(metrics, cfg)
     tags = {r["ticker"]: _row_tags(r) for _, r in metrics.iterrows()}
     ov_by_t = overlay.set_index("ticker") if not overlay.empty else pd.DataFrame()
 
@@ -443,25 +455,26 @@ def ideas_page():
     c1.metric("Data as of", cfg.get("asof", scan_dir.name))
     c2.metric("Last refresh", f"{refreshed_at:%Y-%m-%d %H:%M}")
     c3.metric("10Y Treasury — the yield bar", _fmt(cfg.get("gs10"), "{:.2%}"))
-    c4.metric("Names in the hunt zone", len(hi), f"of {floor_n} above the quality floor")
+    c4.metric("Names in the highlights", len(hi), f"of {floor_n} above the quality floor")
 
     # 1 — the map
     _hunt_map(metrics, hi, cfg, st.session_state.get("idea_pick"))
 
     if hi.empty:
         st.info(
-            "No names inside the hunt zone in this scan — the zone needs top-20% quality "
-            "AND a negative residual (cheaper than the multiple this ROIC/industry implies). "
-            "Run a fresh scan from the Data manager page."
+            "No names clear the highlights bar in this scan — quality floor, residual < 0, "
+            "ROIC ≥ 10% and FCF yield ≥ max(4%, 10Y). Run a fresh scan from the Data manager page."
         )
         return
 
     # 2 — the cards + the compact table (the browse surface)
     st.markdown(
-        f"**The zone, cheapest for its quality first** — {len(hi)} names. "
+        f"**The highlights, cheapest for their quality first** — {len(hi)} names "
+        "(quality floor · residual < 0 · ROIC ≥ 10% · FCF yield ≥ max(4%, 10Y)). "
         "`beaten` = sector-laggard price action with analyst support · "
         "`⚠ margins` = a margin ratio slipped below its floor · "
-        "`⚠ ROIC < 10%` = thin returns in absolute terms."
+        "`⚠ ROIC < 10%` = thin returns in absolute terms · "
+        "`⚠ cycle` = Energy or Materials — earnings follow the cycle."
     )
     _name_cards(hi, hist, ov_by_t, tags, n=8)
 

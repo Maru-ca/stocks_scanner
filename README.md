@@ -12,13 +12,13 @@ flags, put overlay, scan artifacts, tests, Streamlit UI.
 
 Two pages. **Ideas** (default) is one scrolling page for the manual
 cash-secured-put workflow: the hunt map (quality vs the valuation residual —
-cheaper-than-quality to the right), tagged cards for the names inside the zone
-(quality floor + residual < 0, most negative residual first, with FCF yield now
-and at −5%), a compact table, and a company detail that appears under the cards
-once you pick a ticker (assignment test, price/EV-FCF/FCF-yield/cash charts,
-margin snapshot). **Data manager** re-downloads everything and re-scans, shows
-the caches and the data-source inventory. Every number is display-only — the
-scanner ranks, the human decides.
+cheaper-than-quality to the right), tagged cards for the highlights — quality
+floor + residual < 0 + ROIC ≥ 10% + FCF yield ≥ max(4%, 10Y), most negative
+residual first, with FCF yield now and at −5% — a compact table, and a company
+detail that appears under the cards once you pick a ticker (assignment test,
+price/EV-FCF/FCF-yield/cash charts, margin snapshot). **Data manager**
+re-downloads everything and re-scans, shows the caches and the data-source
+inventory. Every number is display-only — the scanner ranks, the human decides.
 
 ## Quick start
 
