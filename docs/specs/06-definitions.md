@@ -95,6 +95,9 @@ badge covers it.
 
 - **CAGR (n years)** = (value_t / value_{t−n})^(1/n) − 1, on fiscal-year values.
 - Base year negative or near-zero (|base| < 5% of current revenue) → null, not a wild CAGR.
+- **FCF CAGR fallback (v0.5.7):** if the 5y FCF base is unusable, use the nearest
+  valid year in 3.5–5.5y and set `fcf_cagr5_base_fallback` (Ideas chip `⚠ 5y FCF base`).
+  Revenue CAGR does not fall back. Still-null CAGR still fails the gate.
 - **Margins**: TTM and 5y average of the respective numerator / revenue.
 
 ## 9. Percentile mechanics (scoring)

@@ -66,13 +66,59 @@ def ebitda(ebit_val, dna) -> float | None:
     return float(ebit_val + dna)
 
 
-def cagr(cur, base, cur_rev: float | None = None, years: int = 5) -> float | None:
+def cagr(cur, base, cur_rev: float | None = None, years: float = 5) -> float | None:
     """(cur/base)^(1/n)−1; null if base <= 0 or |base| < 5% of current revenue (doc 06 §8)."""
     if cur is None or base is None or base <= 0 or cur <= 0:
         return None
     if cur_rev is not None and abs(base) < config.CAGR_BASE_FLOOR * abs(cur_rev):
         return None
-    return float((cur / base) ** (1.0 / years) - 1.0)
+    n = float(years)
+    if n <= 0:
+        return None
+    return float((cur / base) ** (1.0 / n) - 1.0)
+
+
+def cagr5_from_series(s: pd.Series, cur_rev: float | None = None, *,
+                      fallback: bool = False) -> tuple[float | None, bool]:
+    """5y CAGR from an annual series indexed by period-end.
+
+    Primary base: the date in [4.6, 5.5]y closest to a true 5.0y gap (same as
+    the old inline helper). If that base is unusable (negative / too small) and
+    ``fallback`` is set, take the valid base in [3.5, 5.5]y closest to 5.0y
+    and return ``used_fallback=True`` — the COVID-year hole (EXPE). Revenue
+    CAGR keeps ``fallback=False``.
+    """
+    s = pd.to_numeric(s, errors="coerce").dropna()
+    if s.empty:
+        return None, False
+    s = s.copy()
+    s.index = pd.to_datetime(s.index)
+    cur_end, cur = s.index[-1], float(s.iloc[-1])
+    if not (cur > 0):
+        return None, False
+
+    def in_window(lo: float, hi: float) -> list:
+        return [e for e in s.index[:-1]
+                if lo * 365 <= (cur_end - e).days <= hi * 365]
+
+    primary = in_window(config.CAGR5_YEARS_LO, config.CAGR5_YEARS_HI)
+    if primary:
+        base = min(primary, key=lambda e: abs((cur_end - e).days - 5 * 365))
+        v = cagr(cur, float(s.loc[base]), cur_rev=cur_rev, years=5)
+        if v is not None:
+            return v, False
+    if not fallback:
+        return None, False
+    best = None
+    for e in in_window(config.CAGR5_FALLBACK_YEARS_LO, config.CAGR5_YEARS_HI):
+        days = (cur_end - e).days
+        v = cagr(cur, float(s.loc[e]), cur_rev=cur_rev, years=days / 365.0)
+        if v is None:
+            continue
+        dist = abs(days - 5 * 365)
+        if best is None or dist < best[0]:
+            best = (dist, v)
+    return (best[1], True) if best else (None, False)
 
 
 def winsor_pct_rank(s: pd.Series, higher_better: bool = True) -> pd.Series:

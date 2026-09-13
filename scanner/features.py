@@ -397,20 +397,13 @@ def build_features(facts: dict, weekly: pd.DataFrame, asof: dt.date,
         out["gm"] = float(W5["gm"].dropna().mean()) if "gm" in W5 and W5["gm"].notna().sum() >= 3 else None
         out["fcf_margin"] = float(W5["fcf_margin"].dropna().mean()) if "fcf_margin" in W5 and W5["fcf_margin"].notna().sum() >= 3 else None
         out["roic"] = float(W5["roic"].dropna().mean()) if "roic" in W5 and W5["roic"].notna().sum() >= 3 else None
-
-        def cagr5(colname):
-            s = F[colname].dropna() if colname in F else None
-            if s is None or s.empty:
-                return None
-            cur_end = s.index[-1]
-            base_idx = [e for e in s.index if 4.6 * 365 <= (cur_end - e).days <= 5.5 * 365]
-            if not base_idx:
-                return None
-            # base closest to a true 5.0y gap (base_idx[-1] would grab any 4.6y artifact)
-            base = min(base_idx, key=lambda e: abs((cur_end - e).days - 5 * 365))
-            return M.cagr(float(s.iloc[-1]), float(s[base]), cur_rev=rev)
-        out["rev_cagr5"] = cagr5("revenue")
-        out["fcf_cagr5"] = cagr5("fcf")
+        out["fcf_cagr5_base_fallback"] = False
+        if "revenue" in F:
+            out["rev_cagr5"], _ = M.cagr5_from_series(F["revenue"].dropna(), cur_rev=rev)
+        if "fcf" in F:
+            val, fb = M.cagr5_from_series(F["fcf"].dropna(), cur_rev=rev, fallback=True)
+            out["fcf_cagr5"] = val
+            out["fcf_cagr5_base_fallback"] = bool(fb)
     # brakes: TTM vs 5y avg — GM from the derived path when GrossProfit is unreported
     gm_ttm = M.safe_div(t("gross_profit"), rev)
     if gm_ttm is None:

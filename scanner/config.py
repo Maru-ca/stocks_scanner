@@ -43,6 +43,9 @@ ROIC_YEARS_MIN = 7              # display gate; scored as percentile (consistenc
 FCF_POS_YEARS_MIN = 9           # display gate; scored as percentile
 TEFF_MIN, TEFF_MAX = 0.0, 0.40  # doc 06 §6 winsorization band
 CAGR_BASE_FLOOR = 0.05          # |base| < 5% of current revenue -> null (doc 06 §8)
+CAGR5_YEARS_LO = 4.6            # primary 5y-CAGR window
+CAGR5_YEARS_HI = 5.5
+CAGR5_FALLBACK_YEARS_LO = 3.5   # FCF only: nearest valid year if the 5y base is unusable
 GOODWILL_IC_PCT = 0.40          # roic_exgoodwill variant trigger (P1, doc 03 §3.1)
 
 # --- Scoring (doc 05 §2) ------------------------------------------------------

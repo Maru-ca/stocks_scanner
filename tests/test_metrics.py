@@ -5,8 +5,8 @@ import pytest
 
 from scanner import config
 from scanner.metrics import (
-    cagr, ev, fixed_scale_yield, invested_capital, self_stats, t_eff_winsorized,
-    winsor_pct_rank,
+    cagr, cagr5_from_series, ev, fixed_scale_yield, invested_capital, self_stats,
+    t_eff_winsorized, winsor_pct_rank,
 )
 
 
@@ -29,6 +29,49 @@ def test_cagr_base_rule():
     assert cagr(200, 49, cur_rev=1000) is None
     assert cagr(200, 60, cur_rev=1000) is not None
     assert cagr(200, -100) is None
+
+
+def _fcf_years(*pairs):
+    """Annual FCF series: (date, value) with the last date as current."""
+    idx = pd.to_datetime([d for d, _ in pairs])
+    return pd.Series([v for _, v in pairs], index=idx)
+
+
+def test_cagr5_uses_closest_5y_base():
+    s = _fcf_years(
+        ("2020-12-31", 100),
+        ("2021-12-31", 110),
+        ("2025-12-31", 200),
+    )
+    v, fb = cagr5_from_series(s)
+    assert fb is False
+    assert v == pytest.approx(cagr(200, 100))
+
+
+def test_cagr5_fallback_when_5y_base_negative():
+    """COVID-style: the ~5y FCF year is negative so the log CAGR is undefined;
+    pick the nearest valid year in 3.5–5.5y and flag the fallback."""
+    s = _fcf_years(
+        ("2020-12-31", -50),   # ~5.0y — unusable
+        ("2021-12-31", 100),   # ~4.0y — valid
+        ("2025-12-31", 200),
+    )
+    none, fb0 = cagr5_from_series(s, fallback=False)
+    assert none is None and fb0 is False
+    v, fb = cagr5_from_series(s, fallback=True)
+    assert fb is True
+    years = (pd.Timestamp("2025-12-31") - pd.Timestamp("2021-12-31")).days / 365.0
+    assert v == pytest.approx(cagr(200, 100, years=years))
+
+
+def test_cagr5_fallback_still_none_if_no_valid_base():
+    s = _fcf_years(
+        ("2020-12-31", -50),
+        ("2021-12-31", -10),
+        ("2025-12-31", 200),
+    )
+    v, fb = cagr5_from_series(s, fallback=True)
+    assert v is None and fb is False
 
 
 def test_ev_ic_identity():
