@@ -11,8 +11,9 @@ flags, put overlay, scan artifacts, tests, Streamlit UI.
 ## The UI
 
 Two pages. **Ideas** (default) is one scrolling page for the manual
-cash-secured-put workflow: the hunt map (quality × cheapness, the shaded zone),
-tagged cards for the names inside the zone (cheapest first, with FCF yield now
+cash-secured-put workflow: the hunt map (quality vs the valuation residual —
+cheaper-than-quality to the right), tagged cards for the names inside the zone
+(quality floor + residual < 0, most negative residual first, with FCF yield now
 and at −5%), a compact table, and a company detail that appears under the cards
 once you pick a ticker (assignment test, price/EV-FCF/FCF-yield/cash charts,
 margin snapshot). **Data manager** re-downloads everything and re-scans, shows

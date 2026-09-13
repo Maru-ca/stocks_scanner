@@ -2,9 +2,12 @@
 
 Two pages: **Ideas** (the default) and **Data manager** (ops). Ideas is one
 scrolling page for the manual cash-secured-put workflow: the hunt map (quality
-× cheapness), tagged cards for the names inside the hunt zone, and a company
-detail that appears once you pick a ticker. Every number here is display-only —
-the scanner ranks, the human decides.
+vs residual — cheaper-than-quality to the right), tagged cards for the names
+inside the zone, and a company detail that appears once you pick a ticker.
+Cheapness on this page means the valuation residual: log(EV/FCF) minus the
+multiple this ROIC/industry usually gets. SELF (vs own 5y history) stays a
+chart, never a rank. Every number is display-only — the scanner ranks, the
+human decides.
 
 Run: streamlit run dashboard/app.py   (or ./control.sh start)
 """
@@ -46,16 +49,13 @@ COLUMN_DOCS = {
         "with positive FCF) · accounting 20% (FCF ÷ net income) · balance 10% (net debt/EBITDA, "
         "lower = better). The top 20% of this score = the quality floor."
     ),
-    "cheapness_score": (
-        "0–100 blend: own-history EV/FCF percentile 40% (ranked against the market "
-        "cross-section) · peer-ladder EV/EBIT percentile 30% · FCF yield on a fixed 0–10% "
-        "scale 30%. Higher = cheaper. The zone cut is ≥ 50."
+    "residual": (
+        "log(EV/FCF) minus the multiple this ROIC and industry group usually get "
+        "(regression fit). More negative = cheaper than the quality deserves. "
+        "The zone cut is residual < 0."
     ),
-    "fcf_yield": "TTM adjusted FCF ÷ enterprise value.",
-    "ev_fcf_self_pct": (
-        "EV/FCF percentile within the stock's OWN 5y weekly history (0 = cheapest ever, "
-        "100 = most expensive)."
-    ),
+    "fcf_yield": "TTM adjusted FCF ÷ enterprise value — the cash you'd earn if you owned it.",
+    "ev_fcf": "EV / TTM adjusted FCF (SBC-expensed).",
     "price": "Last weekly close.",
     "yield at −5%": "FCF yield you'd lock in if put the stock at −5% (from the options chain).",
 }
@@ -86,34 +86,36 @@ def _fmt(v, spec: str) -> str:
 
 
 def _gated(metrics: pd.DataFrame) -> pd.DataFrame:
-    """Scored names that pass gates + coverage — the population the zone draws from."""
+    """Scored names that pass gates + coverage — the population the page ranks
+    (needs a QualityScore; the zone additionally needs a residual)."""
     return metrics[
         metrics["quality_score"].notna()
-        & metrics["cheapness_score"].notna()
         & metrics["gates_pass"].fillna(False)
         & (metrics["input_coverage"] >= 0.8)
     ]
 
 
 def _highlighted(metrics: pd.DataFrame) -> pd.DataFrame:
-    """The hunt zone, as a list: gated + quality floor + cheapness ≥ 50 — the same
-    condition the shaded rectangle draws on the map. Cheapest first."""
+    """The hunt zone, as a list: gated + quality floor + residual < 0 — cheaper
+    than the multiple this ROIC/industry usually gets. Most negative residual first."""
     g = _gated(metrics)
-    hi = g[g["quality_floor_pass"].fillna(False) & (g["cheapness_score"] >= 50)]
-    return hi.sort_values("cheapness_score", ascending=False)
+    hi = g[g["quality_floor_pass"].fillna(False)
+           & g["residual"].notna() & (g["residual"] < 0)]
+    return hi.sort_values("residual", ascending=True)
 
 
 def _row_tags(row) -> list:
-    """Chips for one metrics row. Flags as tags; brakes warn instead of hiding names."""
+    """Chips for one metrics row: sentiment tag + holdability warnings."""
     tags = []
-    if bool(row.get("flag_derated_quality") or False):
-        tags.append(("hunt", "#e4572e"))
     if bool(row.get("flag_beaten_but_delivering") or False):
         tags.append(("beaten", "#4e79a7"))
     if any(pd.notna(row.get(k)) and float(row.get(k)) < t for k, t in [
         ("brake_gm", 0.97), ("brake_fcf_margin", 0.95), ("brake_roic", 0.90),
     ]):
         tags.append(("⚠ margins", "#b07d2b"))
+    roic = row.get("roic")
+    if pd.notna(roic) and float(roic) < 0.10:
+        tags.append(("⚠ ROIC < 10%", "#8ea0b5"))
     return tags
 
 
@@ -163,8 +165,8 @@ def _score_bar(label: str, value, color: str) -> str:
 
 def _name_cards(df: pd.DataFrame, hist: pd.DataFrame, ov_by_t: pd.DataFrame,
                 tags: dict, n: int = 8) -> None:
-    """Graphical cards for the zone names, cheapest first: 5y EV/FCF sparkline,
-    score bars, and the assignment hint (yield now and at −5%)."""
+    """Graphical cards for the zone names, most negative residual first: 5y EV/FCF
+    sparkline (chart only — SELF never ranks), quality bar, and the cash figures."""
     cards = []
     for _, r in df.head(n).iterrows():
         y: list = []
@@ -181,6 +183,8 @@ def _name_cards(df: pd.DataFrame, hist: pd.DataFrame, ov_by_t: pd.DataFrame,
         ev = r.get("ev_fcf")
         ev_s = f"{ev:.1f}x" if pd.notna(ev) else "—"
         med_s = f" · 5y median {med:.1f}x" if med else ""
+        res = r.get("residual")
+        res_s = f"residual {res:.2f}" if pd.notna(res) else ""
         t = r["ticker"]
         y95 = None
         if not ov_by_t.empty and t in ov_by_t.index:
@@ -196,12 +200,10 @@ def _name_cards(df: pd.DataFrame, hist: pd.DataFrame, ov_by_t: pd.DataFrame,
             f"<span style='opacity:.65;font-size:.85em'>{name}</span>{_chips_html(tags.get(t, []))}</div>"
             f"<div style='font-size:.72em;opacity:.6;margin-bottom:6px'>{sector} · {price_s}</div>"
             f"{_spark_svg(y)}"
-            f"<div style='margin-top:6px'>"
-            f"{_score_bar('Quality', r.get('quality_score'), '#59a14f')}"
-            f"{_score_bar('Cheapness', r.get('cheapness_score'), '#4e79a7')}</div>"
+            f"<div style='margin-top:6px'>{_score_bar('Quality', r.get('quality_score'), '#59a14f')}</div>"
             f"<div style='font-size:.75em;margin-top:6px'>"
             f"<span style='color:{fy_col};font-weight:600'>FCF yield {fy_s}</span>"
-            f"<span style='opacity:.7'> · EV/FCF {ev_s}{med_s}{assign}</span></div>"
+            f"<span style='opacity:.7'> · {res_s} · EV/FCF {ev_s}{med_s}{assign}</span></div>"
             f"</div>"
         )
     st.markdown(
@@ -213,9 +215,11 @@ def _name_cards(df: pd.DataFrame, hist: pd.DataFrame, ov_by_t: pd.DataFrame,
 
 # ---------------------------------------------------------------- the charts ---
 def _hunt_map(metrics: pd.DataFrame, hi: pd.DataFrame, cfg: dict, selected: str | None) -> None:
-    """Quality × cheapness scatter: grey = every scored name, orange = inside the
-    hunt zone (top-20% quality AND cheapness ≥ 50). The selected ticker is starred."""
-    pts = metrics[metrics["quality_score"].notna() & metrics["cheapness_score"].notna()].copy()
+    """Quality (y) × residual (x, plotted as −residual so cheaper sits RIGHT): grey =
+    scored names with a residual, orange = inside the zone (floor + residual < 0).
+    The selected ticker is starred."""
+    pts = metrics[metrics["quality_score"].notna() & metrics["residual"].notna()].copy()
+    pts["x"] = -pts["residual"]          # cheaper (more negative residual) -> right
     member = set(hi["ticker"]) if not hi.empty else set()
     fig = go.Figure()
     rest = pts[~pts["ticker"].isin(member)]
@@ -229,7 +233,7 @@ def _hunt_map(metrics: pd.DataFrame, hi: pd.DataFrame, cfg: dict, selected: str 
         hover = sub["ticker"] if "name" not in sub.columns else sub["ticker"] + " — " + sub["name"]
         is_zone = name == "in the hunt zone"
         fig.add_trace(go.Scatter(
-            x=sub["cheapness_score"], y=sub["quality_score"],
+            x=sub["x"], y=sub["quality_score"],
             mode="markers+text" if is_zone and len(sub) <= 12 else "markers",
             text=sub["ticker"] if is_zone and len(sub) <= 12 else None,
             textposition="top center", textfont=dict(size=9),
@@ -239,7 +243,7 @@ def _hunt_map(metrics: pd.DataFrame, hi: pd.DataFrame, cfg: dict, selected: str 
     if selected and not pts.empty and (pts["ticker"] == selected).any():
         s = pts[pts["ticker"] == selected].iloc[0]
         fig.add_trace(go.Scatter(
-            x=[s["cheapness_score"]], y=[s["quality_score"]],
+            x=[s["x"]], y=[s["quality_score"]],
             mode="markers+text", text=[selected], textposition="bottom center",
             textfont=dict(size=11, color="#e4572e"),
             showlegend=False, hoverinfo="skip",
@@ -247,24 +251,30 @@ def _hunt_map(metrics: pd.DataFrame, hi: pd.DataFrame, cfg: dict, selected: str 
                         line=dict(width=2, color="white")),
         ))
     thr = cfg.get("quality_floor_threshold")
-    if thr is not None and pd.notna(thr):
-        fig.add_hline(y=thr, line_dash="dot", line_color="#666",
-                      annotation_text=f"quality floor — top 20% (≈{thr:.0f})")
-        fig.add_shape(type="rect", x0=50, x1=105, y0=thr, y1=108,
-                      fillcolor="rgba(228,87,46,0.07)", line_width=0)
-        fig.add_annotation(x=77, y=107, text="the hunt zone", showarrow=False,
-                           font=dict(color="#e4572e", size=11))
+    if not pts.empty:
+        pad = (pts["x"].max() - pts["x"].min()) * 0.05 or 0.1
+        x0, x1 = float(pts["x"].min() - pad), float(pts["x"].max() + pad)
+        if thr is not None and pd.notna(thr):
+            fig.add_hline(y=thr, line_dash="dot", line_color="#666",
+                          annotation_text=f"quality floor — top 20% (≈{thr:.0f})")
+            # the zone: above the floor AND residual < 0 (x = −residual > 0)
+            fig.add_shape(type="rect", x0=0, x1=x1, y0=thr, y1=108,
+                          fillcolor="rgba(228,87,46,0.07)", line_width=0)
+            fig.add_annotation(x=(0 + x1) / 2, y=107, text="the hunt zone", showarrow=False,
+                               font=dict(color="#e4572e", size=11))
+        fig.update_layout(xaxis_range=[x0, x1])
     fig.update_layout(
-        height=520, xaxis_range=[0, 105],
-        xaxis_title="cheaper → (CheapnessScore, 100 = cheapest)",
+        height=520,
+        xaxis_title="cheaper than the ROIC-implied multiple → (−residual)",
         yaxis_title="higher quality ↑ (QualityScore)",
-        title=f"Quality × cheapness — {len(zone)} names in the zone",
+        title=f"Quality vs price-for-quality — {len(zone)} names cheaper than their quality implies",
         hovermode="closest",
     )
     st.plotly_chart(fig, width="stretch")
     st.caption(
-        "Grey = every scored name. Orange = the zone: top-20% quality at cheapness ≥ 50. "
-        "Those names continue below, cheapest first — pick one to inspect."
+        "Grey = scored names with a residual. Orange = above the quality floor AND residual < 0 — "
+        "trading cheaper than the multiple this ROIC and industry usually get. Those names "
+        "continue below, most negative residual first."
     )
 
 
@@ -363,11 +373,11 @@ def _company_detail(sel: str, row, hist: pd.DataFrame, overlay: pd.DataFrame,
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Quality (0–100)", _fmt(row.get("quality_score"), "{:.0f}"),
               "top 20% passes the gate")
-    m2.metric("Cheapness (0–100)", _fmt(row.get("cheapness_score"), "{:.0f}"),
-              "100 = cheapest")
-    m3.metric("EV/FCF vs own history", _fmt(row.get("ev_fcf_self_pct"), "{:.0f}"),
-              "0 = cheapest ever")
-    m4.metric("FCF yield", _fmt(row.get("fcf_yield"), "{:.2%}"))
+    m2.metric("Residual", _fmt(row.get("residual"), "{:.2f}"),
+              "more negative = cheaper for the quality")
+    m3.metric("FCF yield", _fmt(row.get("fcf_yield"), "{:.2%}"))
+    m4.metric("EV/FCF vs own history", _fmt(row.get("ev_fcf_self_pct"), "{:.0f}"),
+              "0 = cheapest ever — chart, not a score")
     if tags.get(sel):
         st.markdown("This name: " + _chips_html(tags.get(sel, [])).replace(
             "font-size:.62em", "font-size:.8em"), unsafe_allow_html=True)
@@ -391,7 +401,7 @@ def _company_detail(sel: str, row, hist: pd.DataFrame, overlay: pd.DataFrame,
             st.caption(f"Earnings in ~{de:.0f} days — premium window vs surprise risk.")
     else:
         st.info("Options were not pulled for this name (the overlay covers the top "
-                "quality-floor names by cheapness).")
+                "quality-floor names only).")
 
     if not h.empty:
         _detail_charts(h, sel)
@@ -441,28 +451,30 @@ def ideas_page():
     if hi.empty:
         st.info(
             "No names inside the hunt zone in this scan — the zone needs top-20% quality "
-            "AND cheapness ≥ 50. Run a fresh scan from the Data manager page."
+            "AND a negative residual (cheaper than the multiple this ROIC/industry implies). "
+            "Run a fresh scan from the Data manager page."
         )
         return
 
     # 2 — the cards + the compact table (the browse surface)
     st.markdown(
-        f"**The zone, cheapest first** — {len(hi)} names. `hunt` = the derated-quality "
-        "flag · `beaten` = sector-laggard price action with analyst support · "
-        "`⚠ margins` = a margin ratio slipped below its floor."
+        f"**The zone, cheapest for its quality first** — {len(hi)} names. "
+        "`beaten` = sector-laggard price action with analyst support · "
+        "`⚠ margins` = a margin ratio slipped below its floor · "
+        "`⚠ ROIC < 10%` = thin returns in absolute terms."
     )
     _name_cards(hi, hist, ov_by_t, tags, n=8)
 
     table = hi.reset_index(drop=True)
-    show = table[["ticker", "name", "sector", "price", "quality_score", "cheapness_score",
-                  "fcf_yield", "ev_fcf_self_pct"]].copy()
+    show = table[["ticker", "name", "sector", "price", "quality_score",
+                  "residual", "fcf_yield", "ev_fcf"]].copy()
     show["yield at −5%"] = table["ticker"].map(
         lambda t: f"{ov_by_t.loc[t, 'fcf_yield_strike_95']:.1%}"
         if (not ov_by_t.empty and t in ov_by_t.index
             and pd.notna(ov_by_t.loc[t, "fcf_yield_strike_95"])) else "—")
     show["tags"] = table["ticker"].map(lambda t: " · ".join(x for x, _ in tags.get(t, [])) or "—")
-    for c, f in {"price": "{:.2f}", "quality_score": "{:.0f}", "cheapness_score": "{:.0f}",
-                 "fcf_yield": "{:.2%}", "ev_fcf_self_pct": "{:.0f}"}.items():
+    for c, f in {"price": "{:.2f}", "quality_score": "{:.0f}", "residual": "{:.2f}",
+                 "fcf_yield": "{:.2%}", "ev_fcf": "{:.1f}"}.items():
         show[c] = show[c].map(lambda v, f=f: f.format(v) if pd.notna(v) else "—")
     col_cfg = {c: st.column_config.Column(label=c, help=COLUMN_DOCS.get(c)) for c in show.columns}
     event = st.dataframe(show, column_config=col_cfg, width="stretch", height=300,
