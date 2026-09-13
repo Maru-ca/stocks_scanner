@@ -9,6 +9,7 @@ numerator/denominator gap is 48 weeks = 12m minus the skipped month).
 from __future__ import annotations
 
 import datetime as dt
+import math
 import time
 
 import numpy as np
@@ -407,3 +408,148 @@ def annualized_premium(premium_pct: float | None, dte: int) -> float | None:
     if premium_pct is None or dte < 21:
         return None
     return premium_pct * 365.0 / dte
+
+
+def _n(x):
+    try:
+        v = float(x)
+        return v if pd.notna(v) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _premium_from_quotes(bid, ask, last) -> tuple[float | None, float | None, bool]:
+    """premium, mid, weak_quote. Bid=0 is not premium 0."""
+    mid = ((bid + ask) / 2
+           if (bid is not None and bid >= 0 and ask is not None and ask > 0) else None)
+    premium = next((p for p in (bid, mid, last) if p is not None and p > 0), None)
+    weak = premium is not None and (bid is None or bid <= 0)
+    return premium, mid, weak
+
+
+def fetch_option_chain(ticker: str, expiry: dt.date) -> dict | None:
+    """Puts + calls for one expiry as normalized frames. Best-effort: None on failure."""
+    try:
+        oc = yf.Ticker(ticker).option_chain(expiry.isoformat())
+    except Exception:
+        return None
+
+    def _prep(df: pd.DataFrame | None, side: str) -> pd.DataFrame:
+        if df is None or df.empty or "strike" not in df.columns:
+            return pd.DataFrame()
+        out = pd.DataFrame({
+            "side": side,
+            "strike": pd.to_numeric(df["strike"], errors="coerce"),
+            "bid": pd.to_numeric(df["bid"], errors="coerce") if "bid" in df.columns else np.nan,
+            "ask": pd.to_numeric(df["ask"], errors="coerce") if "ask" in df.columns else np.nan,
+            "last": pd.to_numeric(df["lastPrice"] if "lastPrice" in df.columns
+                                 else df["last"], errors="coerce")
+                    if ("lastPrice" in df.columns or "last" in df.columns) else np.nan,
+            "volume": pd.to_numeric(df["volume"], errors="coerce") if "volume" in df.columns else np.nan,
+            "oi": pd.to_numeric(df["openInterest"], errors="coerce") if "openInterest" in df.columns else np.nan,
+            "iv": pd.to_numeric(df["impliedVolatility"], errors="coerce")
+                  if "impliedVolatility" in df.columns else np.nan,
+        })
+        itm = df["inTheMoney"] if "inTheMoney" in df.columns else None
+        out["in_the_money"] = itm.astype(bool) if itm is not None else pd.NA
+        out = out.dropna(subset=["strike"]).sort_values("strike").reset_index(drop=True)
+        return out
+
+    try:
+        return {"puts": _prep(getattr(oc, "puts", None), "put"),
+                "calls": _prep(getattr(oc, "calls", None), "call")}
+    except Exception:
+        return None
+
+
+def pick_nearest_strike(df: pd.DataFrame, spot: float, target_pct: float) -> dict | None:
+    """Row nearest target_pct*spot, plus premium/mid/weak_quote. None if empty."""
+    if df is None or df.empty or spot is None or not (float(spot) > 0):
+        return None
+    strikes = pd.to_numeric(df["strike"], errors="coerce")
+    valid = df.loc[strikes.notna()].copy()
+    if valid.empty:
+        return None
+    target = float(target_pct) * float(spot)
+    i = (valid["strike"] - target).abs().idxmin()
+    row = valid.loc[i]
+    bid, ask, last = _n(row.get("bid")), _n(row.get("ask")), _n(row.get("last"))
+    premium, mid, weak = _premium_from_quotes(bid, ask, last)
+    return {
+        "side": row.get("side"), "strike": float(row["strike"]),
+        "bid": bid, "ask": ask, "mid": mid, "last": last,
+        "premium": premium, "oi": _n(row.get("oi")), "iv": _n(row.get("iv")),
+        "volume": _n(row.get("volume")), "weak_quote": weak,
+        "in_the_money": (bool(row["in_the_money"])
+                         if "in_the_money" in row.index and pd.notna(row["in_the_money"]) else None),
+    }
+
+
+def _norm_cdf(x: float) -> float:
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def _norm_pdf(x: float) -> float:
+    return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+
+
+def black_scholes_greeks(side: str, spot: float, strike: float, dte: int,
+                         iv: float | None, rate: float = 0.0) -> dict:
+    """Long-option greeks from listed IV. Theta is per calendar day. Empty dict
+    if IV/spot/strike unusable. 0 DTE uses T = 1/365 so the formula doesn't blow up."""
+    if side not in ("put", "call"):
+        return {}
+    if any(v is None or not (float(v) > 0) for v in (spot, strike, iv)):
+        return {}
+    T = max(int(dte), 0) / 365.0 or (1.0 / 365.0)
+    sig = float(iv)
+    sqrtT = math.sqrt(T)
+    try:
+        d1 = (math.log(float(spot) / float(strike)) + (rate + 0.5 * sig * sig) * T) / (sig * sqrtT)
+    except (ValueError, ZeroDivisionError):
+        return {}
+    d2 = d1 - sig * sqrtT
+    nd1, npd1 = _norm_cdf(d1), _norm_pdf(d1)
+    disc = math.exp(-rate * T)
+    if side == "call":
+        delta = nd1
+        theta_yr = -float(spot) * npd1 * sig / (2 * sqrtT) - rate * float(strike) * disc * _norm_cdf(d2)
+    else:
+        delta = nd1 - 1.0
+        theta_yr = -float(spot) * npd1 * sig / (2 * sqrtT) + rate * float(strike) * disc * _norm_cdf(-d2)
+    gamma = npd1 / (float(spot) * sig * sqrtT)
+    vega = float(spot) * npd1 * sqrtT / 100.0   # per 1 vol point
+    return {"delta": delta, "gamma": gamma, "theta": theta_yr / 365.0, "vega": vega}
+
+
+def contract_analytics(side: str, spot: float, strike: float, premium: float | None,
+                       dte: int, iv: float | None, rate: float = 0.0) -> dict:
+    """Breakeven + CSP lens + long greeks for one listed put or call. Short-option
+    P&L is the opposite sign of long delta; breakeven is the same number (K±premium).
+
+    CSP fields: cushion_pct = distance to breakeven as % of spot in the OTM
+    direction (negative = already through BE); assignment_risk = |delta| as a
+    rough Black-Scholes P(finish ITM); pay_vs_cushion = premium per 1
+    percentage point of cushion (None when through BE or no premium)."""
+    side = "put" if str(side).lower().startswith("p") else "call"
+    out: dict = {"side": side, "spot": spot, "strike": strike, "premium": premium,
+                 "dte": dte, "iv": iv}
+    if premium is not None and strike and float(strike) > 0 and premium >= 0:
+        out["breakeven"] = (float(strike) - float(premium) if side == "put"
+                            else float(strike) + float(premium))
+        out["cash_pct"] = float(premium) / float(strike)
+        if spot and float(spot) > 0:
+            out["be_vs_spot"] = out["breakeven"] / float(spot) - 1.0
+            out["strike_vs_spot"] = float(strike) / float(spot) - 1.0
+            out["intrinsic"] = (max(float(strike) - float(spot), 0.0) if side == "put"
+                                else max(float(spot) - float(strike), 0.0))
+            out["extrinsic"] = float(premium) - out["intrinsic"]
+            out["cushion_pct"] = ((float(spot) - out["breakeven"]) / float(spot)
+                                  if side == "put"
+                                  else (out["breakeven"] - float(spot)) / float(spot))
+            if out["cushion_pct"] > 0:
+                out["pay_vs_cushion"] = float(premium) / (out["cushion_pct"] * 100.0)
+    out.update(black_scholes_greeks(side, spot, strike, dte, iv, rate=rate or 0.0))
+    if "delta" in out:
+        out["assignment_risk"] = abs(out["delta"])
+    return out

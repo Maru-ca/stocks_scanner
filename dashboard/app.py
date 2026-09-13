@@ -4,7 +4,9 @@ Two pages: **Ideas** (the default) and **Data manager** (ops). Ideas is one
 scrolling page for the manual cash-secured-put workflow: the hunt map (quality
 vs residual — cheaper-than-quality to the right), tagged cards for the
 highlights, and a company detail that appears once you pick a ticker.
-Cheapness on this page means the valuation residual: log(EV/FCF) minus the
+The company pane has two tabs: **Financials** (scores, assignment FCF, history
+charts, margins) and **Options** (live chain — pick a put or call for
+breakeven and greeks). Cheapness on this page means the valuation residual: log(EV/FCF) minus the
 multiple this ROIC/industry usually gets; the highlights require the quality
 floor, residual < 0, ROIC ≥ 10% and FCF yield ≥ max(4%, 10Y). SELF (vs own 5y
 history) stays a chart, never a rank. Every number is display-only — the
@@ -82,7 +84,7 @@ def _latest_scan() -> Path | None:
     return dirs[-1] if dirs else None
 
 
-# ------------------------------------------------------------ live put quotes ---
+# ------------------------------------------------------------ live options ---
 # Cached so slider/select reruns don't hammer yfinance; keys carry today so the
 # cache rolls over at midnight. Live quotes never touch the highlights.
 @st.cache_data(ttl=90, show_spinner=False)
@@ -91,12 +93,12 @@ def _live_expiries(ticker: str, today: str) -> list[str]:
 
 
 @st.cache_data(ttl=90, show_spinner=False)
-def _live_put(ticker: str, spot: float, expiry: str, target_pct: float, today: str) -> dict | None:
-    q = MD.put_quote(ticker, spot, dt.date.fromisoformat(expiry), target_pct,
-                     dt.date.fromisoformat(today))
-    if q is not None:  # dt.date objects don't survive st.cache_data cleanly
-        q["expiry"] = q["expiry"].isoformat()
-    return q
+def _live_chain(ticker: str, expiry: str) -> dict | None:
+    raw = MD.fetch_option_chain(ticker, dt.date.fromisoformat(expiry))
+    if raw is None:
+        return None
+    return {"puts": raw["puts"].to_dict("records"),
+            "calls": raw["calls"].to_dict("records")}
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -105,13 +107,58 @@ def _next_earnings(ticker: str, today: str) -> str | None:
     return d.isoformat() if d else None
 
 
-def _put_panel(sel: str, spot, gs10, ov_row) -> None:
-    """Live standing put on the selected ticker — plus an event quote when the
-    next earnings print is 0-5 days out. Display-only: never hides or ranks."""
-    st.markdown("**Put premium (live)**")
-    st.caption("Quotes are live from the option chain — not scan-as-of. "
-               "Cash % = premium ÷ strike.")
+def _chain_frames(ticker: str, expiry: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    raw = _live_chain(ticker, expiry)
+    if not raw:
+        return pd.DataFrame(), pd.DataFrame()
+    return pd.DataFrame(raw["puts"]), pd.DataFrame(raw["calls"])
+
+
+def _quote_from_side(df: pd.DataFrame, spot, target_pct: float, expiry: str,
+                     today: dt.date) -> dict | None:
+    q = MD.pick_nearest_strike(df, float(spot), target_pct)
+    if q is None:
+        return None
+    q["expiry"] = expiry
+    q["dte"] = (dt.date.fromisoformat(expiry) - today).days
+    return q
+
+
+def _suggested_quote_row(role, q, expiry, dte, annualize_ok, gs10, notes=""):
+    if q is None:
+        return {"": role, "expiry": dt.date.fromisoformat(expiry), "DTE": dte,
+                "strike": "—", "bid": "—", "mid": "—", "cash % of strike": "no quote",
+                "annualized": "—", "OI": "—", "notes": notes or "no chain for this leg"}
+    p = MD.premium_pct_of_strike(q)
+    a = MD.annualized_premium(p, q["dte"]) if annualize_ok else None
+    extra = []
+    if a is not None and gs10 and a < gs10:
+        extra.append("low premium")
+    if q.get("weak_quote"):
+        extra.append("weak quote")
+    if dte < 21 and annualize_ok:
+        extra.append("short DTE — cash % shown raw, not annualized")
+    return {"": role, "expiry": dt.date.fromisoformat(expiry), "DTE": q["dte"],
+            "strike": f"${q['strike']:,.1f}",
+            "bid": f"{q['bid']:.2f}" if q["bid"] is not None else "—",
+            "mid": f"{q['mid']:.2f}" if q["mid"] is not None else "—",
+            "cash % of strike": f"{p:.2%}" if p is not None else "no quote",
+            "annualized": f"{a:.0%}" if a is not None else "—",
+            "OI": f"{q['oi']:,.0f}" if q["oi"] is not None else "—",
+            "notes": " · ".join([notes] + extra if notes else extra) or "—"}
+
+
+def _options_section(sel: str, spot, gs10, ov_row) -> None:
+    """Live chain + suggested standing/event quotes. Display-only: never hides or ranks."""
+    st.caption("Live chain (now, not scan-as-of). Pick an expiry, then a put or call. "
+               "This does not change the highlights list.")
     today = dt.date.today()
+    if spot is None or not (float(spot) > 0):
+        st.caption("No spot price — cannot quote options.")
+        return
+    spot = float(spot)
+    rate = float(gs10) if gs10 is not None and pd.notna(gs10) else 0.0
+
     exps = _live_expiries(sel, today.isoformat())
     if not exps:
         st.caption("No option chain available right now.")
@@ -121,10 +168,44 @@ def _put_panel(sel: str, spot, gs10, ov_row) -> None:
     default = (min(exps, key=lambda e: abs(dte_of[e] - 35)) if ge21
                else max(exps, key=lambda e: dte_of[e]))
     label_of = {f"{dt.date.fromisoformat(e):%a %b %d} · {dte_of[e]} DTE": e for e in exps}
-    label = st.selectbox("Expiry", list(label_of.keys()),
-                         index=list(label_of).index(next(l for l, e in label_of.items() if e == default)))
+    labels = list(label_of.keys())
+    default_label = next(l for l, e in label_of.items() if e == default)
+    exp_key = f"opt_exp_{sel}"
+    # resolve the current expiry BEFORE rendering snaps so the active one styles right
+    cur_label = st.session_state.get(exp_key)
+    if cur_label not in label_of:
+        cur_label = default_label
+    active_snap = min((7, 21, 30, 45, 60),
+                      key=lambda n: abs(n - dte_of[label_of[cur_label]]))
+    snaps = st.columns(5)
+    snap_dte = None
+    for col, n in zip(snaps, (7, 21, 30, 45, 60)):
+        if col.button(f"{n}d", key=f"opt_snap_{sel}_{n}",
+                      type="primary" if n == active_snap else "secondary"):
+            snap_dte = n
+    if snap_dte is not None:
+        choice = min(exps, key=lambda e: abs(dte_of[e] - snap_dte))
+        st.session_state[exp_key] = (
+            f"{dt.date.fromisoformat(choice):%a %b %d} · {dte_of[choice]} DTE")
+    elif exp_key not in st.session_state or st.session_state[exp_key] not in label_of:
+        st.session_state[exp_key] = default_label
+    label = st.selectbox("Expiry", labels, key=exp_key)
     expiry = label_of[label]
     dte = dte_of[expiry]
+    puts, calls = _chain_frames(sel, expiry)
+
+    # editable strike target: follows the DTE rule until the user overrides it,
+    # resets to the rule when the expiry changes (per ticker/session)
+    rule_pct = MD.strike_target_pct(dte)
+    tgt_key, lastexp_key = f"opt_target_{sel}", f"opt_lastexp_{sel}"
+    if st.session_state.get(lastexp_key) != label or tgt_key not in st.session_state:
+        st.session_state[lastexp_key] = label
+        st.session_state[tgt_key] = round(rule_pct * 100, 1)
+    st.number_input(
+        "Strike target (% of spot)", 50.0, 105.0, key=tgt_key, step=0.5,
+        help=f"DTE rule: {rule_pct:.0%} at {dte} DTE ({'<7d ATM · 7–20d ≈97% · ≥21d ≈95%'}). "
+             "Your override applies to the suggested put and the default chain row "
+             "until you change expiry or click another row.")
 
     ned = None
     ned_s = _next_earnings(sel, today.isoformat())
@@ -135,50 +216,134 @@ def _put_panel(sel: str, spot, gs10, ov_row) -> None:
     event_days = (ned - today).days if ned else None
     in_event_window = event_days is not None and 0 <= event_days <= 5
 
-    def _quote_row(role, exp_str, target_pct, annualize_ok, notes=""):
-        q = _live_put(sel, float(spot), exp_str, target_pct, today.isoformat())
-        if q is None:
-            return {"": role, "expiry": dt.date.fromisoformat(exp_str), "DTE": dte_of[exp_str],
-                    "strike": "—", "bid": "—", "mid": "—", "cash % of strike": "no quote",
-                    "annualized": "—", "OI": "—", "notes": notes or "no chain for this leg"}
-        p = MD.premium_pct_of_strike(q)
-        a = MD.annualized_premium(p, q["dte"]) if annualize_ok else None
-        return {"": role, "expiry": dt.date.fromisoformat(exp_str), "DTE": q["dte"],
-                "strike": f"${q['strike']:,.1f}",
-                "bid": f"{q['bid']:.2f}" if q["bid"] is not None else "—",
-                "mid": f"{q['mid']:.2f}" if q["mid"] is not None else "—",
-                "cash % of strike": f"{p:.2%}" if p is not None else "no quote",
-                "annualized": f"{a:.0%}" if a is not None else "—",
-                "OI": f"{q['oi']:,.0f}" if q["oi"] is not None else "—",
-                "notes": notes, "_a": a, "_weak": bool(q.get("weak_quote"))}
-
+    target_pct = float(st.session_state[tgt_key]) / 100.0
+    st.markdown("**Suggested quotes**")
+    st.caption(f"Standing put = listed strike nearest **{target_pct:.1%} of spot** "
+               f"(DTE={dte}; rule default {rule_pct:.0%} — edit the target above). "
+               "Event put (ATM) appears only if earnings is 0–5 days out.")
     rows = []
-    if in_event_window:  # expiry on/before the print, ATM, raw cash % only
+    if in_event_window:
         cand = [e for e in exps if dt.date.fromisoformat(e) <= ned]
         e_exp = cand[-1] if cand else exps[0]
-        rows.append(_quote_row("Event", e_exp, 1.00, annualize_ok=False,
-                               notes="earnings in window · not annualized (event premium)"))
-
-    notes = []
-    row = _quote_row("Standing", expiry, MD.strike_target_pct(dte), annualize_ok=True)
-    if row.get("_a") is not None and gs10 and row["_a"] < gs10:
-        notes.append("low premium")
-    if row.get("_weak"):
-        notes.append("weak quote")
+        e_puts, _ = _chain_frames(sel, e_exp)
+        eq = _quote_from_side(e_puts, spot, 1.00, e_exp, today)
+        rows.append(_suggested_quote_row(
+            "Event put", eq, e_exp, dte_of[e_exp], False, gs10,
+            "earnings in window · not annualized"))
+    sq = _quote_from_side(puts, spot, target_pct, expiry, today)
+    stand_notes = []
     if ned and dt.date.fromisoformat(expiry) >= ned and not in_event_window:
-        notes.append("earnings in window")
-    if dte < 21:
-        notes.append("short DTE — cash % shown raw, not annualized")
-    row["notes"] = " · ".join(notes) if notes else row["notes"]
-    rows.append(row)
-    for r in rows:
-        r.pop("_a", None), r.pop("_weak", None)
-
+        stand_notes.append("earnings in window")
+    rows.append(_suggested_quote_row(
+        "Standing put", sq, expiry, dte, True, gs10, " · ".join(stand_notes)))
     st.dataframe(pd.DataFrame(rows)[["", "expiry", "DTE", "strike", "bid", "mid",
                                      "cash % of strike", "annualized", "OI", "notes"]],
                  width="stretch", hide_index=True)
-    st.caption("Annualized = cash % × 365/DTE, shown only from 21 DTE. `low premium` = "
-               "annualized below the 10Y Treasury — a note, never a filter.")
+    st.caption("Annualized = cash % × 365/DTE, only from 21 DTE. `low premium` = "
+               "annualized below the 10Y — a note, never a filter.")
+
+    st.markdown("**Chain** — click a row to inspect one contract.")
+    side = st.radio("Side", ["Puts", "Calls"], horizontal=True, key=f"opt_side_{sel}")
+    raw = puts if side == "Puts" else calls
+    if raw.empty:
+        st.caption(f"No {side.lower()} listed for this expiry.")
+        return
+    around = st.toggle("Strikes near the spot only", value=True, key=f"opt_near_{sel}")
+    view = raw.copy()
+    if around:
+        near = view[(view["strike"] >= spot * 0.80) & (view["strike"] <= spot * 1.20)]
+        if not near.empty:
+            view = near
+    view = view.reset_index(drop=True)
+    # moneyness marker: yfinance flag when present, side-correct fallback otherwise
+    itm_flag = view["in_the_money"] if "in_the_money" in view.columns else pd.Series(pd.NA, index=view.index)
+
+    def _money(flat: bool | None, k: float) -> str:
+        if flat is not None and not pd.isna(flat):
+            return "● ITM" if bool(flat) else "OTM"
+        if side == "Puts":
+            return "● ITM" if k >= spot else "OTM"
+        return "● ITM" if k <= spot else "OTM"
+
+    show = pd.DataFrame({
+        "moneyness": [_money(f, float(k)) for f, k in zip(itm_flag, view["strike"])],
+        "strike": view["strike"],
+        "bid": view["bid"],
+        "ask": view["ask"],
+        "last": view["last"],
+        "IV": view["iv"].map(lambda v: f"{float(v):.1%}" if pd.notna(v) else "—"),
+        "volume": view["volume"],
+        "OI": view["oi"],
+    })
+    event = st.dataframe(
+        show,
+        column_config={
+            "strike": st.column_config.NumberColumn(format="%.1f"),
+            "bid": st.column_config.NumberColumn(format="%.2f"),
+            "ask": st.column_config.NumberColumn(format="%.2f"),
+            "last": st.column_config.NumberColumn(format="%.2f"),
+            "volume": st.column_config.NumberColumn(format="%.0f"),
+            "OI": st.column_config.NumberColumn(format="%.0f"),
+        },
+        width="stretch", height=320, hide_index=True,
+        on_select="rerun", selection_mode="single-row",
+        key=f"opt_chain_{sel}_{expiry}_{side}",
+    )
+    picked_i = None
+    try:
+        rows_i = event.selection.rows
+        if rows_i:
+            picked_i = int(rows_i[0])
+    except Exception:
+        picked_i = None
+    if picked_i is None:
+        tgt = target_pct if side == "Puts" else 1.00   # user's editable target
+        picked_i = int((view["strike"] - spot * tgt).abs().idxmin())
+    picked_i = max(0, min(int(picked_i), len(view) - 1))
+    crow = view.iloc[picked_i]
+    bid, ask, last = MD._n(crow.get("bid")), MD._n(crow.get("ask")), MD._n(crow.get("last"))
+    prem, mid, weak = MD._premium_from_quotes(bid, ask, last)
+    stats = MD.contract_analytics(
+        "put" if side == "Puts" else "call",
+        spot, float(crow["strike"]), prem, dte, MD._n(crow.get("iv")), rate=rate,
+    )
+    st.markdown(f"**Selected {side[:-1].lower()}** · strike ${float(crow['strike']):,.1f} · "
+                f"{dte} DTE · premium {_fmt(prem, '{:.2f}')}"
+                f"{' (weak quote — bid unusable)' if weak else ''}")
+
+    # --- CSP lens: what the credit buys and how far it protects ----------------
+    cash = stats.get("cash_pct")
+    ann = MD.annualized_premium(cash, dte)
+    cushion = stats.get("cushion_pct")
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Cushion to BE", _fmt(cushion, "{:.1%}"),
+              "price can fall this far before the credit is gone" if side == "Puts"
+              else "price can rise this far before the credit is gone")
+    k2.metric("Credit vs cash posted", _fmt(cash, "{:.2%}"), "premium ÷ strike")
+    k3.metric("Credit vs 10Y",
+              _fmt(ann, "{:.0%} ann") if ann is not None else _fmt(cash, "{:.2%} raw"),
+              f"10Y = {rate:.1%}" if ann is not None else "not annualized (<21 DTE)")
+    k4.metric("≈ assignment risk", _fmt(stats.get("assignment_risk"), "{:.0%}"),
+              "Black–Scholes |delta| ≈ P(finish ITM) — an estimate, not a forecast")
+    if cushion is not None and cushion > 0:
+        k5.metric("Pay vs cushion", _fmt(stats.get("pay_vs_cushion"), "{:.2f}"),
+                  "premium per 1% of cushion to BE")
+    else:
+        k5.metric("Pay vs cushion", "—", "already at/through breakeven")
+
+    g1, g2, g3, g4 = st.columns(4)
+    g1.metric("Delta (long)", _fmt(stats.get("delta"), "{:.2f}"),
+              "short is the opposite sign")
+    g2.metric("Gamma", _fmt(stats.get("gamma"), "{:.3f}"))
+    g3.metric("Theta / day", _fmt(stats.get("theta"), "{:.3f}"))
+    g4.metric("Vega / vol-pt", _fmt(stats.get("vega"), "{:.3f}"))
+    st.caption(
+        f"Breakeven {_fmt(stats.get('breakeven'), '{:.2f}')} "
+        f"({'strike − premium' if side == 'Puts' else 'strike + premium'} — your effective "
+        f"buy if assigned) · strike vs spot {_fmt(stats.get('strike_vs_spot'), '{:.1%}')} · "
+        f"listed IV {_fmt(MD._n(crow.get('iv')), '{:.1%}')}. Greeks are Black–Scholes from "
+        "that IV. This panel never filters the Ideas list."
+    )
 
 
 def _fmt(v, spec: str) -> str:
@@ -485,48 +650,49 @@ def _company_detail(sel: str, row, hist: pd.DataFrame, overlay: pd.DataFrame,
                     ov_by_t: pd.DataFrame, tags: dict, gs10) -> None:
     h = (hist[(hist["ticker"] == sel)].sort_values("week")
          if not hist.empty and "ticker" in hist.columns else pd.DataFrame())
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Quality (0–100)", _fmt(row.get("quality_score"), "{:.0f}"),
-              "top 20% passes the gate")
-    m2.metric("Residual", _fmt(row.get("residual"), "{:.2f}"),
-              "more negative = cheaper for the quality")
-    m3.metric("FCF yield", _fmt(row.get("fcf_yield"), "{:.2%}"))
-    m4.metric("EV/FCF vs own history", _fmt(row.get("ev_fcf_self_pct"), "{:.0f}"),
-              "0 = cheapest ever — chart, not a score")
-    if tags.get(sel):
-        st.markdown("This name: " + _chips_html(tags.get(sel, [])).replace(
-            "font-size:.62em", "font-size:.8em"), unsafe_allow_html=True)
+    ov_row = ov_by_t.loc[sel] if (not ov_by_t.empty and sel in ov_by_t.index) else None
 
-    st.markdown("**The assignment test** — would you own it at the strike?")
-    if not ov_by_t.empty and sel in ov_by_t.index:
-        o = ov_by_t.loc[sel]
-        p = o.get("price")
-        y95, y90 = o.get("fcf_yield_strike_95"), o.get("fcf_yield_strike_90")
-        d1, d2, d3 = st.columns(3)
-        d1.metric("Own it at −5%?", _fmt(y95, "{:.1%}"),
-                  f"strike ≈ ${p * 0.95:,.0f}" if pd.notna(p) else None)
-        d2.metric("Own it at −10%?", _fmt(y90, "{:.1%}"),
-                  f"strike ≈ ${p * 0.90:,.0f}" if pd.notna(p) else None)
-        ned_s = _next_earnings(sel, dt.date.today().isoformat())
-        de = ((dt.date.fromisoformat(ned_s) - dt.date.today()).days if ned_s
-              else o.get("days_to_earnings"))
-        d3.metric("Days to earnings", _fmt(de, "{:.0f}"),
-                  "event premium window" if pd.notna(de) and de <= 5 else None)
-        if pd.notna(o.get("iv_atm")):
-            st.caption(f"IV {_fmt(o.get('iv_atm'), '{:.0%}')} vs 30d HV {_fmt(o.get('hv_30d'), '{:.0%}')} "
-                       "(scan snapshot — the live panel below has today's chain).")
-    else:
-        st.info("Options were not pulled for this name (the overlay covers the top "
-                "quality-floor names only).")
+    fin, opt = st.tabs(["Financials", "Options"])
+    with fin:
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Quality (0–100)", _fmt(row.get("quality_score"), "{:.0f}"),
+                  "top 20% passes the gate")
+        m2.metric("Residual", _fmt(row.get("residual"), "{:.2f}"),
+                  "more negative = cheaper for the quality")
+        m3.metric("FCF yield", _fmt(row.get("fcf_yield"), "{:.2%}"))
+        m4.metric("EV/FCF vs own history", _fmt(row.get("ev_fcf_self_pct"), "{:.0f}"),
+                  "0 = cheapest ever — chart, not a score")
+        if tags.get(sel):
+            st.markdown("This name: " + _chips_html(tags.get(sel, [])).replace(
+                "font-size:.62em", "font-size:.8em"), unsafe_allow_html=True)
 
-    _put_panel(sel, row.get("price"), gs10, ov_by_t.loc[sel] if (not ov_by_t.empty and sel in ov_by_t.index) else None)
+        st.markdown("**Assignment test** — FCF yield if you owned the shares at −5% / −10%. "
+                    "That is the equity question, not the option premium.")
+        if ov_row is not None:
+            p = ov_row.get("price")
+            y95, y90 = ov_row.get("fcf_yield_strike_95"), ov_row.get("fcf_yield_strike_90")
+            d1, d2, d3 = st.columns(3)
+            d1.metric("Own it at −5%?", _fmt(y95, "{:.1%}"),
+                      f"strike ≈ ${p * 0.95:,.0f}" if pd.notna(p) else None)
+            d2.metric("Own it at −10%?", _fmt(y90, "{:.1%}"),
+                      f"strike ≈ ${p * 0.90:,.0f}" if pd.notna(p) else None)
+            ned_s = _next_earnings(sel, dt.date.today().isoformat())
+            de = ((dt.date.fromisoformat(ned_s) - dt.date.today()).days if ned_s
+                  else ov_row.get("days_to_earnings"))
+            d3.metric("Days to earnings", _fmt(de, "{:.0f}"),
+                      "event window" if pd.notna(de) and de <= 5 else None)
+        else:
+            st.caption("No scan overlay row for strike-FCF yields (top quality-floor names only).")
 
-    if not h.empty:
-        _detail_charts(h, sel)
-    else:
-        st.info("No weekly history for this name in this scan.")
-    st.markdown("**Margins — still intact?**")
-    _margin_snapshot(row)
+        if not h.empty:
+            _detail_charts(h, sel)
+        else:
+            st.info("No weekly history for this name in this scan.")
+        st.markdown("**Margins — still intact?**")
+        _margin_snapshot(row)
+
+    with opt:
+        _options_section(sel, row.get("price"), gs10, ov_row)
 
 
 # --------------------------------------------------------------- ideas page ---
