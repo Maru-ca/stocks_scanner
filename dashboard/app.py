@@ -277,12 +277,13 @@ def _options_section(sel: str, spot, gs10, ov_row) -> None:
     })
     itm_rows = [i for i, (f, k) in enumerate(zip(itm_flag, view["strike"]))
                 if _is_itm(f, float(k))]
-    tinted = show.style.map(
-        lambda v: "background-color: rgba(228,87,46,0.16);",
-        subset=pd.IndexSlice[itm_rows, :] if itm_rows else None,
-    ) if itm_rows else show
+    styled = show.style
+    if itm_rows:
+        styled = styled.map(lambda v: "background-color: rgba(228,87,46,0.16);",
+                            subset=pd.IndexSlice[itm_rows, :])
+    styled = styled.map(lambda v: "font-weight: bold;", subset=pd.IndexSlice[:, "strike"])
     event = st.dataframe(
-        tinted,
+        styled,
         width="stretch", height=320, hide_index=True,
         on_select="rerun", selection_mode="single-row",
         key=f"opt_chain_{sel}_{expiry}_{side}",
