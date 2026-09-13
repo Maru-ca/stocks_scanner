@@ -253,16 +253,28 @@ def _options_section(sel: str, spot, gs10, ov_row) -> None:
         return
     view = raw.copy()
     if around:
-        near = view[(view["strike"] >= spot * 0.80) & (view["strike"] <= spot * 1.20)]
+        # window centered on the SUGGESTED strike (follows the strike-target input)
+        # so the preselected row sits mid-table; wide enough upward to keep ITM
+        # strikes visible. Toggle off to see the whole chain.
+        tgt_strike = spot * (target_pct if side == "Puts" else 1.00)
+        near = view[(view["strike"] >= tgt_strike * 0.90) & (view["strike"] <= tgt_strike * 1.18)]
         if not near.empty:
             view = near
     view = view.reset_index(drop=True)
 
     chain_key = f"opt_chain_{sel}_{expiry}_{side}_{int(around)}"
+    default_i = int((view["strike"] - spot * (target_pct if side == "Puts" else 1.00)).abs().idxmin())
+    # keep the table's selected row in sync with the suggestion: a change of
+    # strike target (or a fresh expiry/side view) preselects the suggested row;
+    # once you click another row, your click wins until the target changes again
+    sync_key = f"opt_sync_{chain_key}"
+    sync_sig = f"{target_pct:.3f}"
+    if st.session_state.get(sync_key) != sync_sig:
+        st.session_state[sync_key] = sync_sig
+        st.session_state[chain_key] = {"selection": {"rows": [default_i], "columns": []}}
     picked_i = _chain_picked_i(chain_key, len(view))
     if picked_i is None:
-        tgt = target_pct if side == "Puts" else 1.00
-        picked_i = int((view["strike"] - spot * tgt).abs().idxmin())
+        picked_i = default_i
     picked_i = max(0, min(int(picked_i), len(view) - 1))
     crow = view.iloc[picked_i]
     bid, ask, last = MD._n(crow.get("bid")), MD._n(crow.get("ask")), MD._n(crow.get("last"))
@@ -379,11 +391,12 @@ def _options_section(sel: str, spot, gs10, ov_row) -> None:
     styled = styled.map(lambda v: "font-weight: bold;", subset=pd.IndexSlice[:, "strike"])
     st.dataframe(
         styled,
-        width="stretch", height=240, hide_index=True,
+        width="stretch", height=560, hide_index=True,
         on_select="rerun", selection_mode="single-row",
         key=chain_key,
     )
-    st.caption("Click a row to inspect it. Orange = already in the money.")
+    st.caption("Click a row to inspect it. Orange = already in the money. "
+               "The suggested row is preselected.")
     with st.expander("Greeks"):
         g1, g2, g3, g4 = st.columns(4)
         g1.metric("Delta", _fmt(stats.get("delta"), "{:.2f}"))
