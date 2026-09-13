@@ -178,16 +178,16 @@ def _options_section(sel: str, spot, gs10, ov_row) -> None:
     active_snap = min((7, 21, 30, 45, 60),
                       key=lambda n: abs(n - dte_of[label_of[cur_label]]))
     snaps = st.columns(5)
-    snap_dte = None
     for col, n in zip(snaps, (7, 21, 30, 45, 60)):
         if col.button(f"{n}d", key=f"opt_snap_{sel}_{n}",
                       type="primary" if n == active_snap else "secondary"):
-            snap_dte = n
-    if snap_dte is not None:
-        choice = min(exps, key=lambda e: abs(dte_of[e] - snap_dte))
-        st.session_state[exp_key] = (
-            f"{dt.date.fromisoformat(choice):%a %b %d} · {dte_of[choice]} DTE")
-    elif exp_key not in st.session_state or st.session_state[exp_key] not in label_of:
+            # commit the jump and rerun immediately: this run would still style
+            # the snaps against the OLD expiry (state was read above)
+            choice = min(exps, key=lambda e: abs(dte_of[e] - n))
+            st.session_state[exp_key] = (
+                f"{dt.date.fromisoformat(choice):%a %b %d} · {dte_of[choice]} DTE")
+            st.rerun()
+    if exp_key not in st.session_state or st.session_state[exp_key] not in label_of:
         st.session_state[exp_key] = default_label
     label = st.selectbox("Expiry", labels, key=exp_key)
     expiry = label_of[label]
@@ -255,40 +255,39 @@ def _options_section(sel: str, spot, gs10, ov_row) -> None:
         if not near.empty:
             view = near
     view = view.reset_index(drop=True)
-    # moneyness marker: yfinance flag when present, side-correct fallback otherwise
+    # ITM detection: yfinance flag when present, side-correct fallback otherwise
     itm_flag = view["in_the_money"] if "in_the_money" in view.columns else pd.Series(pd.NA, index=view.index)
 
-    def _money(flat: bool | None, k: float) -> str:
-        if flat is not None and not pd.isna(flat):
-            return "● ITM" if bool(flat) else "OTM"
-        if side == "Puts":
-            return "● ITM" if k >= spot else "OTM"
-        return "● ITM" if k <= spot else "OTM"
+    def _is_itm(f, k: float) -> bool:
+        if f is not None and not pd.isna(f):
+            return bool(f)
+        return k >= spot if side == "Puts" else k <= spot
+
+    def _s(v, spec: str) -> str:
+        return spec.format(float(v)) if v is not None and pd.notna(v) else "—"
 
     show = pd.DataFrame({
-        "moneyness": [_money(f, float(k)) for f, k in zip(itm_flag, view["strike"])],
-        "strike": view["strike"],
-        "bid": view["bid"],
-        "ask": view["ask"],
-        "last": view["last"],
-        "IV": view["iv"].map(lambda v: f"{float(v):.1%}" if pd.notna(v) else "—"),
-        "volume": view["volume"],
-        "OI": view["oi"],
+        "strike": [_s(k, "{:.1f}") for k in view["strike"]],
+        "bid": [_s(v, "{:.2f}") for v in view["bid"]],
+        "ask": [_s(v, "{:.2f}") for v in view["ask"]],
+        "last": [_s(v, "{:.2f}") for v in view["last"]],
+        "IV": [_s(v, "{:.1%}") for v in view["iv"]],
+        "volume": [_s(v, "{:,.0f}") for v in view["volume"]],
+        "OI": [_s(v, "{:,.0f}") for v in view["oi"]],
     })
+    itm_rows = [i for i, (f, k) in enumerate(zip(itm_flag, view["strike"]))
+                if _is_itm(f, float(k))]
+    tinted = show.style.map(
+        lambda v: "background-color: rgba(228,87,46,0.16);",
+        subset=pd.IndexSlice[itm_rows, :] if itm_rows else None,
+    ) if itm_rows else show
     event = st.dataframe(
-        show,
-        column_config={
-            "strike": st.column_config.NumberColumn(format="%.1f"),
-            "bid": st.column_config.NumberColumn(format="%.2f"),
-            "ask": st.column_config.NumberColumn(format="%.2f"),
-            "last": st.column_config.NumberColumn(format="%.2f"),
-            "volume": st.column_config.NumberColumn(format="%.0f"),
-            "OI": st.column_config.NumberColumn(format="%.0f"),
-        },
+        tinted,
         width="stretch", height=320, hide_index=True,
         on_select="rerun", selection_mode="single-row",
         key=f"opt_chain_{sel}_{expiry}_{side}",
     )
+    st.caption("Tinted rows are in the money (strike past the spot); plain rows are OTM.")
     picked_i = None
     try:
         rows_i = event.selection.rows
