@@ -313,3 +313,97 @@ def options_atm(ticker: str, spot: float, today: dt.date | None = None) -> dict 
         return out or None
     except Exception:
         return None
+
+
+# ------------------------------------------------- live put panel (v1, 2026-09) --
+# Live quotes for the selected ticker on the Ideas page. Never touches scoring,
+# gates or the nightly overlay: options never change who is highlighted.
+
+PUT_PANEL_MAX_DTE = 60
+
+
+def strike_target_pct(dte: int) -> float:
+    """Standing-put strike target vs spot by DTE bucket: <7d ATM (a 95% put at
+    1 DTE is usually junk), 7-20d ~0.97, >=21d ~0.95."""
+    if dte < 7:
+        return 1.00
+    if dte < 21:
+        return 0.97
+    return 0.95
+
+
+def listed_expiries(ticker: str, today: dt.date | None = None,
+                    max_dte: int = PUT_PANEL_MAX_DTE) -> list[dt.date]:
+    """Listed expiry dates with DTE in 0..max_dte (0 allowed — OPTIONS_MIN_DTE
+    is a nightly-overlay floor, not this panel's). Best-effort: [] on failure."""
+    today = today or dt.date.today()
+    try:
+        dates = yf.Ticker(ticker).options or ()
+        out = []
+        for s in dates:
+            try:
+                d = dt.date.fromisoformat(str(s))
+            except ValueError:
+                continue
+            if 0 <= (d - today).days <= max_dte:
+                out.append(d)
+        return sorted(set(out))
+    except Exception:
+        return []
+
+
+def put_quote(ticker: str, spot: float, expiry: dt.date, target_pct: float,
+              today: dt.date | None = None) -> dict | None:
+    """One listed PUT nearest target_pct*spot on one expiry. Premium prefers a
+    positive bid, falls back to mid, then last — bid=0 is marked weak_quote and
+    never counts as premium 0. Best-effort: None on any failure."""
+    today = today or dt.date.today()
+    if spot is None or not (float(spot) > 0) or expiry is None:
+        return None
+    try:
+        puts = yf.Ticker(ticker).option_chain(expiry.isoformat()).puts
+        if puts is None or puts.empty:
+            return None
+
+        def _n(x):
+            try:
+                v = float(x)
+                return v if pd.notna(v) else None
+            except (TypeError, ValueError):
+                return None
+
+        strikes = pd.to_numeric(puts["strike"], errors="coerce").dropna()
+        if strikes.empty:
+            return None
+        target = float(target_pct) * float(spot)
+        row = puts.loc[(strikes - target).abs().idxmin()]
+        bid, ask = _n(row.get("bid")), _n(row.get("ask"))
+        last, oi = _n(row.get("lastPrice")), _n(row.get("openInterest"))
+        iv = _n(row.get("impliedVolatility"))
+        mid = ((bid + ask) / 2
+               if (bid is not None and bid >= 0 and ask is not None and ask > 0) else None)
+        premium = next((p for p in (bid, mid, last) if p is not None and p > 0), None)
+        weak = premium is not None and (bid is None or bid <= 0)
+        return {
+            "strike": float(row["strike"]), "bid": bid, "ask": ask, "mid": mid,
+            "last": last, "premium": premium, "oi": oi, "iv": iv,
+            "expiry": expiry, "dte": (expiry - today).days, "weak_quote": weak,
+        }
+    except Exception:
+        return None
+
+
+def premium_pct_of_strike(quote: dict | None) -> float | None:
+    """Cash % of strike for the standing put; None without a usable premium."""
+    if not quote or quote.get("premium") is None:
+        return None
+    k = quote.get("strike") or 0
+    return quote["premium"] / k if k > 0 else None
+
+
+def annualized_premium(premium_pct: float | None, dte: int) -> float | None:
+    """365-annualized cash % — only meaningful from ~a month out (>=21 DTE).
+    Short-DTE annualization is a misleading big number and is suppressed."""
+    if premium_pct is None or dte < 21:
+        return None
+    return premium_pct * 365.0 / dte

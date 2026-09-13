@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -23,6 +24,9 @@ import plotly.graph_objects as go
 import streamlit as st
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from scanner import market_data as MD  # noqa: E402  (live put quotes only — never ranks)
 SCANS = ROOT / "data" / "scans"
 
 st.set_page_config(page_title="stocks_scanner", layout="wide")
@@ -76,6 +80,105 @@ def load_scan(scan_dir: Path, _stamp: float):
 def _latest_scan() -> Path | None:
     dirs = sorted(p for p in SCANS.iterdir() if p.is_dir()) if SCANS.exists() else []
     return dirs[-1] if dirs else None
+
+
+# ------------------------------------------------------------ live put quotes ---
+# Cached so slider/select reruns don't hammer yfinance; keys carry today so the
+# cache rolls over at midnight. Live quotes never touch the highlights.
+@st.cache_data(ttl=90, show_spinner=False)
+def _live_expiries(ticker: str, today: str) -> list[str]:
+    return [d.isoformat() for d in MD.listed_expiries(ticker, dt.date.fromisoformat(today))]
+
+
+@st.cache_data(ttl=90, show_spinner=False)
+def _live_put(ticker: str, spot: float, expiry: str, target_pct: float, today: str) -> dict | None:
+    q = MD.put_quote(ticker, spot, dt.date.fromisoformat(expiry), target_pct,
+                     dt.date.fromisoformat(today))
+    if q is not None:  # dt.date objects don't survive st.cache_data cleanly
+        q["expiry"] = q["expiry"].isoformat()
+    return q
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _next_earnings(ticker: str, today: str) -> str | None:
+    d = MD.next_earnings_date(ticker, dt.date.fromisoformat(today))
+    return d.isoformat() if d else None
+
+
+def _put_panel(sel: str, spot, gs10, ov_row) -> None:
+    """Live standing put on the selected ticker — plus an event quote when the
+    next earnings print is 0-5 days out. Display-only: never hides or ranks."""
+    st.markdown("**Put premium (live)**")
+    st.caption("Quotes are live from the option chain — not scan-as-of. "
+               "Cash % = premium ÷ strike.")
+    today = dt.date.today()
+    exps = _live_expiries(sel, today.isoformat())
+    if not exps:
+        st.caption("No option chain available right now.")
+        return
+    dte_of = {e: (dt.date.fromisoformat(e) - today).days for e in exps}
+    ge21 = [e for e in exps if dte_of[e] >= 21]
+    default = (min(exps, key=lambda e: abs(dte_of[e] - 35)) if ge21
+               else max(exps, key=lambda e: dte_of[e]))
+    label_of = {f"{dt.date.fromisoformat(e):%a %b %d} · {dte_of[e]} DTE": e for e in exps}
+    label = st.selectbox("Expiry", list(label_of.keys()),
+                         index=list(label_of).index(next(l for l, e in label_of.items() if e == default)))
+    expiry = label_of[label]
+    dte = dte_of[expiry]
+
+    ned = None
+    ned_s = _next_earnings(sel, today.isoformat())
+    if ned_s:
+        ned = dt.date.fromisoformat(ned_s)
+    elif ov_row is not None and pd.notna(ov_row.get("days_to_earnings")):
+        ned = today + dt.timedelta(days=int(ov_row["days_to_earnings"]))
+    event_days = (ned - today).days if ned else None
+    in_event_window = event_days is not None and 0 <= event_days <= 5
+
+    def _quote_row(role, exp_str, target_pct, annualize_ok, notes=""):
+        q = _live_put(sel, float(spot), exp_str, target_pct, today.isoformat())
+        if q is None:
+            return {"": role, "expiry": dt.date.fromisoformat(exp_str), "DTE": dte_of[exp_str],
+                    "strike": "—", "bid": "—", "mid": "—", "cash % of strike": "no quote",
+                    "annualized": "—", "OI": "—", "notes": notes or "no chain for this leg"}
+        p = MD.premium_pct_of_strike(q)
+        a = MD.annualized_premium(p, q["dte"]) if annualize_ok else None
+        return {"": role, "expiry": dt.date.fromisoformat(exp_str), "DTE": q["dte"],
+                "strike": f"${q['strike']:,.1f}",
+                "bid": f"{q['bid']:.2f}" if q["bid"] is not None else "—",
+                "mid": f"{q['mid']:.2f}" if q["mid"] is not None else "—",
+                "cash % of strike": f"{p:.2%}" if p is not None else "no quote",
+                "annualized": f"{a:.0%}" if a is not None else "—",
+                "OI": f"{q['oi']:,.0f}" if q["oi"] is not None else "—",
+                "notes": notes, "_a": a, "_weak": bool(q.get("weak_quote"))}
+
+    rows = []
+    if in_event_window:  # expiry on/before the print, ATM, raw cash % only
+        cand = [e for e in exps if dt.date.fromisoformat(e) <= ned]
+        e_exp = cand[-1] if cand else exps[0]
+        rows.append(_quote_row("Event", e_exp, 1.00, annualize_ok=False,
+                               notes="earnings in window · not annualized (event premium)"))
+
+    notes = []
+    row = _quote_row("Standing", expiry, MD.strike_target_pct(dte), annualize_ok=True)
+    if row.get("_a") is not None and gs10 and row["_a"] < gs10:
+        notes.append("low premium")
+    if row.get("_weak"):
+        notes.append("weak quote")
+    if ned and dt.date.fromisoformat(expiry) >= ned and not in_event_window:
+        notes.append("earnings in window")
+    if dte < 21:
+        notes.append("short DTE — cash % shown raw, not annualized")
+    row["notes"] = " · ".join(notes) if notes else row["notes"]
+    rows.append(row)
+    for r in rows:
+        r.pop("_a", None), r.pop("_weak", None)
+
+    st.dataframe(pd.DataFrame(rows)[["", "expiry", "DTE", "strike", "bid", "mid",
+                                     "cash % of strike", "annualized", "OI", "notes"]],
+                 width="stretch", hide_index=True)
+    st.caption("Annualized = cash % × 365/DTE, shown only from 21 DTE. `low premium` = "
+               "annualized below the 10Y Treasury — a note, never a filter.")
 
 
 def _fmt(v, spec: str) -> str:
@@ -379,7 +482,7 @@ def _margin_snapshot(row) -> None:
 
 
 def _company_detail(sel: str, row, hist: pd.DataFrame, overlay: pd.DataFrame,
-                    ov_by_t: pd.DataFrame, tags: dict) -> None:
+                    ov_by_t: pd.DataFrame, tags: dict, gs10) -> None:
     h = (hist[(hist["ticker"] == sel)].sort_values("week")
          if not hist.empty and "ticker" in hist.columns else pd.DataFrame())
     m1, m2, m3, m4 = st.columns(4)
@@ -404,16 +507,19 @@ def _company_detail(sel: str, row, hist: pd.DataFrame, overlay: pd.DataFrame,
                   f"strike ≈ ${p * 0.95:,.0f}" if pd.notna(p) else None)
         d2.metric("Own it at −10%?", _fmt(y90, "{:.1%}"),
                   f"strike ≈ ${p * 0.90:,.0f}" if pd.notna(p) else None)
-        gate = "✓ liquid" if (pd.notna(o.get("gate_pass")) and bool(o.get("gate_pass"))) else "✗ thin"
-        ivhv = (f"IV {_fmt(o.get('iv_atm'), '{:.0%}')} vs HV {_fmt(o.get('hv_30d'), '{:.0%}')}"
-                if pd.notna(o.get("iv_atm")) else None)
-        d3.metric("Options gate", gate, ivhv)
-        de = o.get("days_to_earnings")
-        if pd.notna(de):
-            st.caption(f"Earnings in ~{de:.0f} days — premium window vs surprise risk.")
+        ned_s = _next_earnings(sel, dt.date.today().isoformat())
+        de = ((dt.date.fromisoformat(ned_s) - dt.date.today()).days if ned_s
+              else o.get("days_to_earnings"))
+        d3.metric("Days to earnings", _fmt(de, "{:.0f}"),
+                  "event premium window" if pd.notna(de) and de <= 5 else None)
+        if pd.notna(o.get("iv_atm")):
+            st.caption(f"IV {_fmt(o.get('iv_atm'), '{:.0%}')} vs 30d HV {_fmt(o.get('hv_30d'), '{:.0%}')} "
+                       "(scan snapshot — the live panel below has today's chain).")
     else:
         st.info("Options were not pulled for this name (the overlay covers the top "
                 "quality-floor names only).")
+
+    _put_panel(sel, row.get("price"), gs10, ov_by_t.loc[sel] if (not ov_by_t.empty and sel in ov_by_t.index) else None)
 
     if not h.empty:
         _detail_charts(h, sel)
@@ -512,7 +618,8 @@ def ideas_page():
     row = table[table["ticker"] == sel].iloc[0]
     st.divider()
     st.subheader(f"{sel} — {row.get('name') or ''}")
-    _company_detail(sel, metrics[metrics["ticker"] == sel].iloc[0], hist, overlay, ov_by_t, tags)
+    _company_detail(sel, metrics[metrics["ticker"] == sel].iloc[0], hist, overlay, ov_by_t,
+                    tags, cfg.get("gs10"))
 
 
 # --------------------------------------------------------- data manager page --
